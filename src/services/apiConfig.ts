@@ -6,5 +6,5 @@
 const isProd = import.meta.env.PROD;
 
 export const API_BASE_URL = isProd
-  ? (import.meta.env.VITE_API_URL || 'https://soundwave-backend-service.onrender.com')
+  ? (import.meta.env.VITE_API_URL || 'https://soundwave-backend-2o75.onrender.com')
   : '';
