@@ -7,7 +7,7 @@ const cors    = require('cors');
 const https   = require('https');
 const http    = require('http');
 const yts     = require('yt-search');
-const { execSync, spawn } = require('child_process');
+const { execSync, spawn, exec } = require('child_process');
 
 // Try to load youtube-dl-exec (yt-dlp wrapper) — primary strategy
 let youtubedl, ytdlpBinPath;
@@ -21,10 +21,31 @@ let ytdl;
 try { ytdl = require('@distube/ytdl-core'); } catch { ytdl = null; }
 
 const app  = express();
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+
+// ── Auto-update yt-dlp on startup (keeps it fresh on Render) ─────────────────
+function updateYtDlp() {
+  if (!ytdlpBinPath) return;
+  console.log('[startup] Attempting yt-dlp self-update...');
+  exec(`"${ytdlpBinPath}" -U`, (err, stdout, stderr) => {
+    if (err) {
+      console.log('[startup] yt-dlp update skipped (may be latest):', err.message?.substring(0,80));
+    } else {
+      console.log('[startup] yt-dlp update:', (stdout || stderr)?.substring(0,100));
+    }
+  });
+}
+updateYtDlp();
+
+// ── GET /api/update-ytdlp ────────────────────────────────────────────────────
+app.get('/api/update-ytdlp', (req, res) => {
+  exec(`"${ytdlpBinPath}" -U`, (err, stdout, stderr) => {
+    res.json({ success: !err, message: (stdout || stderr) });
+  });
+});
 
 // ── Helper: HTTPS GET ─────────────────────────────────────────────────────────
 function httpsGet(hostname, path, timeout = 10000) {
@@ -45,81 +66,69 @@ function httpsGet(hostname, path, timeout = 10000) {
   });
 }
 
-// ── Strategy 1: yt-dlp (most reliable — updated daily) ───────────────────────
+// ── Strategy 1: yt-dlp with multiple player clients ──────────────────────────
 async function tryYtDlp(videoId) {
-  if (!youtubedl) return null;
-  try {
-    console.log('[stream] Trying yt-dlp...');
-    const result = await youtubedl(`https://www.youtube.com/watch?v=${videoId}`, {
-      dumpSingleJson: true,
-      noWarnings: true,
-      noCheckCertificates: true,
-      format: 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio',
-      noPlaylist: true,
-    });
-    if (result && result.url) {
-      console.log(`[stream] ✅ yt-dlp | format: ${result.ext || 'unknown'} | ${result.acodec || ''}`);
-      const mime = (result.ext === 'm4a' || result.ext === 'mp4') ? 'audio/mp4' : 'audio/webm';
-      return { url: result.url, type: mime, source: 'yt-dlp' };
-    }
-    // Try requested_formats array
-    if (result && result.requested_formats) {
-      const audio = result.requested_formats.find(f => f.acodec !== 'none' && f.vcodec === 'none');
-      if (audio?.url) {
-        const mime = (audio.ext === 'm4a' || audio.ext === 'mp4') ? 'audio/mp4' : 'audio/webm';
-        console.log(`[stream] ✅ yt-dlp (requested_formats) | ${audio.ext}`);
-        return { url: audio.url, type: mime, source: 'yt-dlp' };
+  const CLIENTS = ['android', 'mweb', 'tv_embedded', 'web'];
+  for (const client of CLIENTS) {
+    try {
+      console.log(`[stream] Trying yt-dlp (client=${client})...`);
+      const args = [
+        '--dump-json', '--no-warnings', '--no-check-certificates',
+        '-f', 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio',
+        '--no-playlist', '--extractor-args', `youtube:player_client=${client}`,
+        `https://www.youtube.com/watch?v=${videoId}`,
+      ];
+      const result = await new Promise((resolve, reject) => {
+        let out = ''; let err = '';
+        const proc = spawn(ytdlpBinPath, args);
+        proc.stdout.on('data', d => { out += d; });
+        proc.stderr.on('data', d => { err += d; });
+        proc.on('close', code => {
+          if (code === 0 && out) {
+            try { resolve(JSON.parse(out)); }
+            catch (e) { reject(new Error('JSON parse failed')); }
+          } else { reject(new Error(err.substring(0, 120) || `exit ${code}`)); }
+        });
+        proc.on('error', reject);
+        setTimeout(() => { proc.kill(); reject(new Error('timeout')); }, 30000);
+      });
+      if (result?.url) {
+        const mime = (result.ext === 'm4a' || result.ext === 'mp4') ? 'audio/mp4' : 'audio/webm';
+        return { url: result.url, type: mime, source: `yt-dlp:${client}` };
       }
+    } catch (e) {
+      console.log(`[stream] yt-dlp (${client}) failed: ${e.message?.substring(0, 100)}`);
     }
-    console.log('[stream] yt-dlp: no audio URL in result');
-  } catch (e) {
-    console.log(`[stream] yt-dlp failed: ${e.message?.substring(0, 120)}`);
   }
   return null;
 }
 
-// ── Strategy 2: @distube/ytdl-core ───────────────────────────────────────────
+// ── Strategy 2: @distube/ytdl-core with android client ───────────────────────
 async function tryYtdlCore(videoId) {
   if (!ytdl) return null;
   try {
-    console.log('[stream] Trying @distube/ytdl-core...');
-    const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${videoId}`);
+    const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${videoId}`, {
+      requestOptions: { headers: { 'User-Agent': 'com.google.android.youtube/17.31.35 (Linux; U; Android 11) gzip' } }
+    });
     const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
-    const m4a  = audioFormats.find(f => f.itag === 140 || f.container === 'mp4');
-    const webm = audioFormats.find(f => f.container === 'webm');
-    const chosen = m4a || webm || audioFormats[0];
-    if (chosen?.url) {
-      console.log(`[stream] ✅ ytdl-core | itag: ${chosen.itag}`);
-      return { url: chosen.url, type: chosen.mimeType || 'audio/mp4', source: 'ytdl-core' };
-    }
-  } catch (e) {
-    console.log(`[stream] ytdl-core failed: ${e.message?.substring(0, 100)}`);
-  }
-  return null;
+    const chosen = audioFormats.find(f => f.itag === 140) || audioFormats[0];
+    return { url: chosen.url, type: chosen.mimeType, source: 'ytdl-core' };
+  } catch (e) { return null; }
 }
 
-// ── Piped / Invidious ────────────────────────────────────────────────────────
-const PIPED_HOSTS = ['pipedapi.kavin.rocks', 'piped-api.lunar.icu', 'pipedapi.moomoo.me'];
-const INVIDIOUS_HOSTS = ['inv.tux.pizza', 'invidious.perennialte.ch', 'iv.melmac.space'];
+// ── Strategy 3: Piped & Invidious ────────────────────────────────────────────
+const PIPED_HOSTS = ['pipedapi.kavin.rocks', 'pipedapi.adminforge.de', 'pipedapi.in.projectsegfau.lt', 'piped-api.lunar.icu'];
+const INVIDIOUS_HOSTS = ['inv.tux.pizza', 'invidious.perennialte.ch', 'iv.melmac.space', 'yt.cdaut.de'];
 
 async function tryPiped(videoId) {
   for (const host of PIPED_HOSTS) {
     try {
-      console.log(`[stream] Trying Piped: ${host}`);
       const r = await httpsGet(host, `/streams/${videoId}`, 8000);
-      if (r.status !== 200) { console.log(`[stream] ${host} → HTTP ${r.status}`); continue; }
+      if (r.status !== 200) continue;
       const data = JSON.parse(r.body);
-      const streams = data.audioStreams || [];
-      const chosen = streams.find(s => s.mimeType?.includes('audio/mp4'))
-                  || streams.find(s => s.mimeType?.includes('audio/webm'))
-                  || streams[0];
-      if (chosen?.url) {
-        console.log(`[stream] ✅ Piped:${host}`);
-        return { url: chosen.url, type: chosen.mimeType, source: `piped:${host}` };
-      }
-    } catch (e) {
-      console.log(`[stream] Piped ${host}: ${e.message?.substring(0, 80)}`);
-    }
+      const chosen = (data.audioStreams || []).find(s => s.mimeType?.includes('audio/mp4')) || data.audioStreams?.[0];
+      if (chosen?.url) return { url: chosen.url, type: chosen.mimeType, source: `piped:${host}` };
+    } catch (e) {}
   }
   return null;
 }
@@ -127,22 +136,22 @@ async function tryPiped(videoId) {
 async function tryInvidious(videoId) {
   for (const host of INVIDIOUS_HOSTS) {
     try {
-      console.log(`[stream] Trying Invidious: ${host}`);
       const r = await httpsGet(host, `/api/v1/videos/${videoId}?fields=adaptiveFormats`, 8000);
-      if (r.status !== 200) { console.log(`[stream] ${host} → HTTP ${r.status}`); continue; }
+      if (r.status !== 200) continue;
       const data = JSON.parse(r.body);
-      const fmts = data.adaptiveFormats || [];
-      const chosen = fmts.find(f => f.type?.includes('audio/mp4') || f.itag === 140)
-                  || fmts.find(f => f.type?.includes('audio/webm'))
-                  || fmts[0];
-      if (chosen?.url) {
-        console.log(`[stream] ✅ Invidious:${host}`);
-        return { url: chosen.url, type: chosen.type, source: `invidious:${host}` };
-      }
-    } catch (e) {
-      console.log(`[stream] Invidious ${host}: ${e.message?.substring(0, 80)}`);
-    }
+      const chosen = (data.adaptiveFormats || []).find(f => f.type?.includes('audio/mp4')) || data.adaptiveFormats?.[0];
+      if (chosen?.url) return { url: chosen.url, type: chosen.type, source: `invidious:${host}` };
+    } catch (e) {}
   }
+  return null;
+}
+
+// ── Strategy 5: oEmbed fallback ──────────────────────────────────────────────
+async function tryOEmbed(videoId) {
+  try {
+    const r = await httpsGet('youtube.com', `/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`, 5000);
+    if (r.status === 200) return { title: JSON.parse(r.body).title, source: 'oembed' };
+  } catch (e) {}
   return null;
 }
 
@@ -168,163 +177,59 @@ app.get('/api/search', async (req, res) => {
   }
 });
 
-// ── GET /api/stream?id=VIDEO_ID ──────────────────────────────────────────────
+// ── GET /api/stream ──────────────────────────────────────────────────────────
 app.get('/api/stream', async (req, res) => {
-  const videoId = req.query.id || '';
-  if (!videoId) return res.status(400).json({ error: 'Missing video ID' });
-  console.log(`\n[stream] Fetching audio for: ${videoId}`);
-
-  // Try strategies in order of reliability
-  const ytdlpResult = await tryYtDlp(videoId);
-  if (ytdlpResult) return res.json(ytdlpResult);
-
-  const ytdlResult = await tryYtdlCore(videoId);
-  if (ytdlResult) return res.json(ytdlResult);
-
-  const pipedResult = await tryPiped(videoId);
-  if (pipedResult) return res.json(pipedResult);
-
-  const invResult = await tryInvidious(videoId);
-  if (invResult) return res.json(invResult);
-
-  console.error('[stream] ❌ All strategies failed for', videoId);
-  return res.status(503).json({ error: 'All stream sources failed', videoId });
+  const videoId = req.query.id;
+  const result = await tryYtDlp(videoId) || await tryPiped(videoId) || await tryInvidious(videoId) || await tryYtdlCore(videoId);
+  if (result) res.json(result);
+  else res.status(503).json({ error: 'All sources failed' });
 });
 
-// ── GET /api/proxy-stream?id=VIDEO_ID ────────────────────────────────────────
-// Pipes audio bytes through our server (avoids CORS issues in browser)
+// ── GET /api/proxy-stream ────────────────────────────────────────────────────
 app.get('/api/proxy-stream', async (req, res) => {
-  const videoId = req.query.id || '';
-  if (!videoId) return res.status(400).end('Missing id');
-  console.log(`[proxy-stream] Request for ${videoId}`);
-
-  // Strategy A: yt-dlp direct pipe to stdout
-  if (youtubedl) {
+  const videoId = req.query.id;
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  const PIPE_CLIENTS = ['android', 'mweb', 'tv_embedded'];
+  for (const client of PIPE_CLIENTS) {
     try {
-      console.log(`[proxy-stream] Trying yt-dlp pipe... (${ytdlpBinPath})`);
-      
-      res.setHeader('Content-Type', 'audio/mp4');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      
+      console.log(`[proxy-stream] Trying yt-dlp (client=${client})`);
+      let hasData = false;
       const proc = spawn(ytdlpBinPath, [
         '-f', 'bestaudio[ext=m4a]/bestaudio',
-        '--no-playlist',
-        '--no-warnings',
-        '-o', '-',  // output to stdout
+        '--no-playlist', '--no-warnings',
+        '--extractor-args', `youtube:player_client=${client}`,
+        '-o', '-',
         `https://www.youtube.com/watch?v=${videoId}`,
       ]);
-
-      let hasData = false;
-      proc.stdout.on('data', () => { hasData = true; });
-      proc.stdout.pipe(res);
-
-      proc.stderr.on('data', (d) => {
-        const msg = d.toString().trim();
-        if (msg) console.log(`[proxy-stream] yt-dlp stderr: ${msg.substring(0, 100)}`);
+      proc.stdout.once('data', () => {
+        hasData = true;
+        res.setHeader('Content-Type', 'audio/mp4');
+        proc.stdout.pipe(res);
       });
-
-      proc.on('close', (code) => {
-        if (code !== 0 && !hasData) {
-          console.log(`[proxy-stream] yt-dlp exited with code ${code}`);
-          if (!res.headersSent) res.status(500).end('yt-dlp failed');
-        }
-      });
-
-      proc.on('error', (e) => {
-        console.log(`[proxy-stream] yt-dlp spawn error: ${e.message}`);
-        if (!res.headersSent) res.status(500).end('yt-dlp spawn failed');
-      });
-
-      // Give yt-dlp 3 seconds to start sending data; if nothing, try next strategy
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      if (hasData) return; // yt-dlp is working, let it finish
-
-      // If no data yet, don't kill it — it might just be slow. Let it continue.
-      // But we won't fall through to other strategies since we already started piping.
-      return;
+      proc.stderr.on('data', d => console.log(`[proxy-stream] stderr: ${d.toString().trim().substring(0,80)}`));
+      await new Promise(r => setTimeout(r, 6000));
+      if (hasData) return;
+      proc.kill();
+      console.log(`[proxy-stream] yt-dlp (${client}) no data, trying next`);
     } catch (e) {
-      console.log(`[proxy-stream] yt-dlp pipe failed: ${e.message}`);
+      console.log(`[proxy-stream] error (${client}): ${e.message}`);
     }
   }
-
-  // Strategy B: Get URL from any working strategy, then pipe via https
-  try {
-    const streamResult = await tryYtDlp(videoId) || await tryYtdlCore(videoId) 
-                      || await tryPiped(videoId) || await tryInvidious(videoId);
-    if (streamResult?.url) {
-      const loc = new URL(streamResult.url);
-      const mod = loc.protocol === 'https:' ? https : http;
-      res.setHeader('Content-Type', streamResult.type || 'audio/mp4');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      mod.get(streamResult.url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (r) => {
-        if (r.statusCode >= 400) {
-          console.log(`[proxy-stream] URL fetch returned ${r.statusCode}`);
-          if (!res.headersSent) res.status(502).end('Upstream error');
-          return;
-        }
-        r.pipe(res);
-      }).on('error', (e) => {
-        console.error('[proxy-stream] pipe error:', e.message);
-        if (!res.headersSent) res.status(500).end('Pipe error');
-      });
-      return;
-    }
-  } catch (e) {
-    console.log(`[proxy-stream] URL strategy failed: ${e.message}`);
-  }
-
-  // Strategy C: ytdl-core direct pipe (last resort)
-  if (ytdl) {
-    try {
-      res.setHeader('Content-Type', 'audio/webm');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      ytdl(`https://www.youtube.com/watch?v=${videoId}`, { quality: 'highestaudio', filter: 'audioonly' })
-        .on('error', (e) => {
-          console.error('[proxy-stream] ytdl pipe error:', e.message);
-          if (!res.headersSent) res.status(500).end();
-        })
-        .pipe(res);
-      return;
-    } catch (e) {
-      console.log(`[proxy-stream] ytdl pipe failed: ${e.message}`);
-    }
-  }
-
-  res.status(503).end('All proxy strategies failed');
+  if (!res.headersSent) res.status(503).end('Proxy failed');
 });
 
 // ── GET /api/lyrics ──────────────────────────────────────────────────────────
 app.get('/api/lyrics', async (req, res) => {
-  const { track_name, artist_name, duration } = req.query;
-  if (!track_name || !artist_name) return res.status(400).json({ error: 'Missing params' });
-  console.log(`[lyrics] "${track_name}" by "${artist_name}"`);
+  const { track_name, artist_name } = req.query;
   try {
-    const params = new URLSearchParams({
-      track_name: String(track_name),
-      artist_name: String(artist_name),
-      ...(duration ? { duration: String(duration) } : {}),
-    });
-    const r = await httpsGet('lrclib.net', `/api/get?${params.toString()}`, 8000);
-    if (r.status === 200) {
-      console.log('[lyrics] ✅ Found');
-      res.setHeader('Content-Type', 'application/json');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      return res.send(r.body);
-    }
-    console.log(`[lyrics] Not found (${r.status})`);
-    return res.status(r.status).json({ error: 'Lyrics not found' });
-  } catch (err) {
-    console.error('[lyrics] Error:', err.message);
-    return res.status(500).json({ error: err.message });
-  }
+    const r = await httpsGet('lrclib.net', `/api/get?track_name=${encodeURIComponent(track_name)}&artist_name=${encodeURIComponent(artist_name)}`);
+    if (r.status === 200) res.send(r.body);
+    else res.status(404).json({ error: 'Not found' });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.listen(PORT, () => {
   console.log(`\n🎵 Music API server running at http://localhost:${PORT}`);
-  console.log(`   yt-dlp:      ${youtubedl ? '✅ available' : '❌ not installed'}`);
+  console.log(`   yt-dlp:      ${ytdlpBinPath ? '✅ available' : '❌ not found'}`);
   console.log(`   ytdl-core:   ${ytdl ? '✅ available' : '❌ not installed'}`);
-  console.log(`   Search:      GET /api/search?q=brown+rang`);
-  console.log(`   Stream URL:  GET /api/stream?id=VIDEO_ID`);
-  console.log(`   Proxy audio: GET /api/proxy-stream?id=VIDEO_ID`);
-  console.log(`   Lyrics:      GET /api/lyrics?track_name=X&artist_name=Y\n`);
 });
