@@ -330,7 +330,7 @@ export function useAudioPlayer() {
   }, []);
 
   // Helper: play from offline blob URL
-  const playOffline = useCallback((blobUrl: string, song: Song) => {
+  const playOffline = useCallback((blobUrl: string) => {
     isOfflineModeRef.current = true;
 
     // Pause YouTube player
@@ -410,7 +410,7 @@ export function useAudioPlayer() {
       const blobUrl = await downloadService.getOfflineUrl(song.id);
       if (blobUrl) {
         console.log('[player] Playing from offline download:', song.title);
-        playOffline(blobUrl, song);
+        playOffline(blobUrl);
         return;
       }
     } catch { /* IndexedDB unavailable, fall through to online */ }
