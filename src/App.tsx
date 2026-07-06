@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Home, Search, Library, User, Music2 } from 'lucide-react';
 import { useAudioPlayer } from './hooks/useAudioPlayer';
 import type { Song } from './services/pipedService';
+import { wakeupBackend } from './services/pipedService';
 import { authService, type User as FirebaseUser } from './services/authService';
 import { firestoreService, type Playlist } from './services/firestoreService';
 import { HomePage } from './pages/HomePage';
@@ -11,6 +12,10 @@ import { AccountPage } from './pages/AccountPage';
 import { AudioPlayerControls } from './components/AudioPlayerControls';
 import './App.css';
 
+// Pre-warm Render backend (free tier sleeps after 15min of inactivity)
+wakeupBackend();
+
+
 type Tab = 'home' | 'search' | 'library' | 'account';
 
 function App() {
@@ -19,6 +24,7 @@ function App() {
   const [likedSongs, setLikedSongs]     = useState<Song[]>([]);
   const [playlists, setPlaylists]       = useState<Playlist[]>([]);
   const [user, setUser]                 = useState<FirebaseUser | null>(null);
+  const [authLoading, setAuthLoading]   = useState(true);
   const [lastSynced, setLastSynced]     = useState<Date | null>(null);
 
   const player = useAudioPlayer();
@@ -50,8 +56,9 @@ function App() {
         }
         setLastSynced(new Date());
       }
+      setAuthLoading(false);
     });
-  }, []);
+  }, [setHistory]);
 
   // ── Load local storage on mount ────────────────────────────────────────────
   useEffect(() => {
@@ -157,6 +164,44 @@ function App() {
   ];
 
   const hasPlayer = !!player.currentSong;
+
+  if (authLoading) {
+    return (
+      <div className="auth-loading-splash">
+        <Music2 size={48} className="spin-logo" />
+        <h2>SOUNDWAVE</h2>
+        <p>Loading your music library...</p>
+      </div>
+    );
+  }
+
+  // Force Sign In for new devices/unauthenticated users
+  if (!user) {
+    return (
+      <div className="app guest-mode">
+        <header className="top-bar">
+          <div className="logo">
+            <Music2 size={20} className="logo-icon" />
+            <span>SOUNDWAVE</span>
+          </div>
+        </header>
+        <main className="page-content">
+          <AccountPage
+            user={null}
+            onUserChange={setUser}
+            lastSynced={null}
+            onClearCache={handleClearCache}
+            onClearHistory={handleClearHistory}
+          />
+        </main>
+        {toastMessage && (
+          <div className="toast">
+            <span>{toastMessage}</span>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="app">

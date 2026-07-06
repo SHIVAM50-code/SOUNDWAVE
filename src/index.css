@@ -1647,4 +1647,35 @@ body {
 }
 .play-all-offline-btn:hover { background: rgba(124,58,237,0.35); }
 
+/* ── Auth Loading Splash ────────────────────────────────────────────────────── */
+.auth-loading-splash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: var(--bg);
+  color: #fff;
+  gap: 16px;
+}
+.auth-loading-splash h2 {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--primary);
+}
+.auth-loading-splash p {
+  color: rgba(255,255,255,0.4);
+  font-size: 14px;
+}
+@keyframes pulse-logo {
+  0%, 100% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.15); opacity: 1; filter: drop-shadow(0 0 12px var(--primary)); }
+}
+.spin-logo {
+  animation: pulse-logo 2s infinite ease-in-out;
+  color: var(--primary);
+}
+
+
 

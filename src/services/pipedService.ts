@@ -9,14 +9,21 @@ export interface Song {
 
 import { API_BASE_URL } from './apiConfig';
 
-// Search uses our local Express server (yt-search scrapes YouTube server-side)
-// Playback uses the YouTube IFrame Player API directly — no stream extraction needed!
+// Ping Render backend on app load to wake it from sleep (free tier sleeps after inactivity)
+export function wakeupBackend() {
+  if (!API_BASE_URL) return; // dev mode, no need
+  fetch(`${API_BASE_URL}/api/search?q=ping`, { signal: AbortSignal.timeout(60000) })
+    .then(() => console.log('[client] Backend warmed up'))
+    .catch(() => {}); // silent
+}
+
+// Search uses our Express server (yt-search scrapes YouTube server-side)
 export const pipedService = {
   async searchSongs(query: string): Promise<Song[]> {
     if (!query.trim()) return [];
     try {
       const res = await fetch(`${API_BASE_URL}/api/search?q=${encodeURIComponent(query)}`, {
-        signal: AbortSignal.timeout(15000)
+        signal: AbortSignal.timeout(45000) // 45s handles Render cold start (30-60s)
       });
       if (!res.ok) throw new Error(`Search failed: ${res.status}`);
       const songs: Song[] = await res.json();

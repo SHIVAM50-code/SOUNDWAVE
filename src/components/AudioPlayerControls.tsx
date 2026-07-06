@@ -51,9 +51,11 @@ export function AudioPlayerControls({ player, likedSongs, onToggleLike }: Props)
   };
 
   const applySpeed = (s: number) => {
-    // YouTube IFrame API setPlaybackRate
-    const yt = (window as any)._ytPlayer;
-    if (yt?.setPlaybackRate) yt.setPlaybackRate(s);
+    // HTML5 Audio playbackRate
+    const audio = (window as any)._audioPlayer;
+    if (audio) {
+      audio.playbackRate = s;
+    }
     setPlaybackSpeed(s);
     setShowSpeedMenu(false);
   };

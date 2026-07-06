@@ -1,6 +1,7 @@
 // src/services/downloadService.ts — Offline downloads via IndexedDB
 import type { Song } from './pipedService';
 import { API_BASE_URL } from './apiConfig';
+import { getStreamUrl } from './streamService';
 
 const DB_NAME    = 'soundwave-downloads';
 const STORE_NAME = 'songs';
@@ -82,22 +83,43 @@ export const downloadService = {
     try {
       onProgress?.(5);
 
-      // Use proxy-stream which pipes audio through our Express server
-      // (avoids CORS issues and ensures complete downloads)
+      // Strategy A: Try browser-side direct download first using Piped stream URL
+      // (Piped proxy endpoints have CORS enabled, so we can fetch them directly)
+      try {
+        console.log('[download] Attempting direct browser-side download...');
+        const result = await getStreamUrl(song.id);
+        if (result?.url) {
+          console.log(`[download] Fetching stream directly from: ${result.url}`);
+          const response = await fetch(result.url, {
+            signal: AbortSignal.timeout(90000), // 90s timeout for browser download
+          });
+          if (response.ok && response.body) {
+            console.log('[download] ✅ Browser-side direct download succeeded!');
+            onProgress?.(10);
+            const mimeType = response.headers.get('content-type') || result.type || 'audio/mp4';
+            return await downloadService._streamToIndexedDB(song, response, mimeType, onProgress);
+          }
+        }
+      } catch (browserErr: any) {
+        console.warn('[download] Browser-side direct download failed, falling back to server proxy:', browserErr.message || browserErr);
+      }
+
+      // Strategy B: Fallback to server-side proxy-stream
+      console.log('[download] Falling back to server-side proxy-stream...');
       const response = await fetch(`${API_BASE_URL}/api/proxy-stream?id=${song.id}`, {
         signal: AbortSignal.timeout(180000), // 3 min timeout for large files
       });
 
       if (!response.ok || !response.body) {
-        throw new Error(`Stream failed: HTTP ${response.status}`);
+        throw new Error(`Proxy stream failed: HTTP ${response.status}`);
       }
 
       onProgress?.(10);
       const mimeType = response.headers.get('content-type') || 'audio/mp4';
       return await downloadService._streamToIndexedDB(song, response, mimeType, onProgress);
-    } catch (err) {
+    } catch (err: any) {
       console.error('[download] Failed:', err);
-      onError?.('Download failed — check that Express server is running (node server.cjs)');
+      onError?.(`Download failed: ${err.message || 'Check connection'}`);
       return false;
     }
   },
