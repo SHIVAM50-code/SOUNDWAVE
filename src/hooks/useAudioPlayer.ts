@@ -1,41 +1,12 @@
 // src/hooks/useAudioPlayer.ts
-// Dual-mode player:
-//   • Online songs  → YouTube IFrame Player API (works on any IP, no server needed for audio)
-//   • Offline songs → HTML5 Audio from IndexedDB blob
-
+// Unified HTML5 Audio Player (supports offline, online streaming, and flawless background playback)
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Song } from '../services/pipedService';
 import { downloadService } from '../services/downloadService';
+import { getStreamUrl } from '../services/streamService';
+import { API_BASE_URL } from '../services/apiConfig';
 
 export type LoopMode = 'none' | 'all' | 'one';
-
-// ── YouTube IFrame API types ──────────────────────────────────────────────────
-declare global {
-  interface Window {
-    YT: any;
-    onYouTubeIframeAPIReady: () => void;
-    _ytPlayer: any;
-    _audioPlayer: HTMLAudioElement | null;
-  }
-}
-
-const YT_STATE = { UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFERING: 3 };
-
-// ── Load YouTube IFrame API once ──────────────────────────────────────────────
-let ytApiPromise: Promise<void> | null = null;
-function loadYTApi(): Promise<void> {
-  if (ytApiPromise) return ytApiPromise;
-  ytApiPromise = new Promise<void>((resolve) => {
-    if (window.YT?.Player) { resolve(); return; }
-    window.onYouTubeIframeAPIReady = resolve;
-    if (!document.querySelector('script[src*="youtube.com/iframe_api"]')) {
-      const s = document.createElement('script');
-      s.src = 'https://www.youtube.com/iframe_api';
-      document.head.appendChild(s);
-    }
-  });
-  return ytApiPromise;
-}
 
 export function useAudioPlayer() {
   const [currentSong, setCurrentSong]   = useState<Song | null>(null);
@@ -51,19 +22,14 @@ export function useAudioPlayer() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // refs
-  const ytPlayerRef         = useRef<any>(null);
   const audioRef            = useRef<HTMLAudioElement | null>(null);
-  const isOfflineRef        = useRef(false);
   const queueIndexRef       = useRef<number>(-1);
   const currentSongRef      = useRef<Song | null>(null);
   const queueRef            = useRef<Song[]>([]);
   const loopModeRef         = useRef<LoopMode>('none');
   const isShuffleRef        = useRef(false);
-  const timeIntervalRef     = useRef<ReturnType<typeof setInterval> | null>(null);
-  const bufferingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const playSongRef         = useRef<((song: Song, newQueue?: Song[]) => void) | null>(null);
-  const nextTrackRef        = useRef<(() => void) | null>(null);  // avoids stale closures
-  const consecutiveFailsRef = useRef(0);   // stops cascade when too many songs are blocked
+  const nextTrackRef        = useRef<(() => void) | null>(null);
 
   // Sync state → refs
   useEffect(() => { currentSongRef.current = currentSong; }, [currentSong]);
@@ -74,28 +40,6 @@ export function useAudioPlayer() {
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
-  }, []);
-
-  // ── Time polling for YouTube IFrame player ────────────────────────────────
-  const startTimePolling = useCallback(() => {
-    if (timeIntervalRef.current) clearInterval(timeIntervalRef.current);
-    timeIntervalRef.current = setInterval(() => {
-      if (!isOfflineRef.current && ytPlayerRef.current) {
-        try {
-          const t = ytPlayerRef.current.getCurrentTime?.() || 0;
-          const d = ytPlayerRef.current.getDuration?.() || 0;
-          setCurrentTime(t);
-          if (d > 0 && !isNaN(d)) setDuration(d);
-        } catch (_) {}
-      }
-    }, 500);
-  }, []);
-
-  const stopTimePolling = useCallback(() => {
-    if (timeIntervalRef.current) {
-      clearInterval(timeIntervalRef.current);
-      timeIntervalRef.current = null;
-    }
   }, []);
 
   // ── Update Media Session ──────────────────────────────────────────────────
@@ -114,62 +58,11 @@ export function useAudioPlayer() {
     navigator.mediaSession.playbackState = 'playing';
   }, []);
 
-  // ── Handle YT player state changes ───────────────────────────────────────
-  const onYTStateChange = useCallback((event: any) => {
-    const state: number = event.data;
-
-    // Clear any existing buffering timeout
-    if (bufferingTimeoutRef.current) {
-      clearTimeout(bufferingTimeoutRef.current);
-      bufferingTimeoutRef.current = null;
-    }
-
-    if (state === YT_STATE.PLAYING) {
-      // Successful playback — reset fail counter
-      consecutiveFailsRef.current = 0;
-      setIsPlaying(true);
-      setIsLoading(false);
-      startTimePolling();
-      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
-    } else if (state === YT_STATE.PAUSED) {
-      setIsPlaying(false);
-      stopTimePolling();
-      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
-    } else if (state === YT_STATE.BUFFERING) {
-      setIsLoading(true);
-      // Start a 12-second timeout to catch silent network hangs (like QUIC protocol errors)
-      bufferingTimeoutRef.current = setTimeout(() => {
-        console.warn('[YTPlayer] Buffering timed out (12s) — forcing skip');
-        setIsLoading(false);
-        setIsPlaying(false);
-        consecutiveFailsRef.current += 1;
-        
-        if (consecutiveFailsRef.current >= 5) {
-          consecutiveFailsRef.current = 0;
-          showToast('Network/Playback issues detected — stopping auto-play');
-          return;
-        }
-
-        showToast('Stream hung (network error) — skipping...');
-        nextTrackRef.current?.();
-      }, 12000);
-    } else if (state === YT_STATE.ENDED) {
-      setIsPlaying(false);
-      stopTimePolling();
-      if (loopModeRef.current === 'one') {
-        ytPlayerRef.current?.seekTo(0, true);
-        ytPlayerRef.current?.playVideo();
-      } else {
-        nextTrackRef.current?.();
-      }
-    }
-  }, [startTimePolling, stopTimePolling, showToast]);
-
-  // ── Initialize YouTube IFrame Player & HTML5 Audio ───────────────────────
+  // ── Initialize HTML5 Audio ──────────────────────────────────────────────────
   useEffect(() => {
-    // HTML5 Audio for offline blobs
     const audio = new Audio();
     audio.preload = 'auto';
+    audio.id = 'soundwave-audio';
     audioRef.current = audio;
     window._audioPlayer = audio;
 
@@ -178,34 +71,30 @@ export function useAudioPlayer() {
     audio.volume = savedVolNum;
     setVolumeState(savedVolNum);
 
-    audio.onplay     = () => {
-      if (!isOfflineRef.current) return;
-      setIsPlaying(true);  
+    // HTML5 Audio Event Listeners
+    audio.onplay = () => {
+      setIsPlaying(true);
       setIsLoading(false);
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
     };
-    audio.onpause    = () => {
-      if (!isOfflineRef.current) return;
+    audio.onpause = () => {
       setIsPlaying(false);
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
     };
-    audio.onwaiting  = () => {
-      if (!isOfflineRef.current) return;
+    audio.onwaiting = () => {
       setIsLoading(true);
     };
-    audio.onplaying  = () => {
-      if (!isOfflineRef.current) return;
-      setIsLoading(false); 
+    audio.onplaying = () => {
+      setIsLoading(false);
       setIsPlaying(true);
     };
     audio.ontimeupdate = () => {
-      if (!isOfflineRef.current) return;
       setCurrentTime(audio.currentTime);
     };
     audio.ondurationchange = () => {
-      if (!isOfflineRef.current) return;
       if (audio.duration && !isNaN(audio.duration)) setDuration(audio.duration);
     };
     audio.onended = () => {
-      if (!isOfflineRef.current) return;
       setIsPlaying(false);
       if (loopModeRef.current === 'one') {
         audio.currentTime = 0;
@@ -214,84 +103,29 @@ export function useAudioPlayer() {
         nextTrackRef.current?.();
       }
     };
-    audio.onerror = () => {
-      if (!isOfflineRef.current) return;
-      setIsLoading(false); 
+    audio.onerror = (e) => {
+      console.error('[audio] Playback error:', e);
+      setIsLoading(false);
       setIsPlaying(false);
       showToast('Playback error — skipping...');
       setTimeout(() => nextTrackRef.current?.(), 1500);
     };
 
-
-    // Initialize YouTube IFrame API + player
-    let ytDiv: HTMLDivElement | null = null;
-    (async () => {
-      try {
-        await loadYTApi();
-        ytDiv = document.createElement('div');
-        ytDiv.id = '__yt_player__';
-        ytDiv.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;pointer-events:none;';
-        document.body.appendChild(ytDiv);
-
-        ytPlayerRef.current = new window.YT.Player('__yt_player__', {
-          width: '1', height: '1',
-          videoId: '',
-          playerVars: {
-            autoplay: 0, controls: 0, playsinline: 1,
-            rel: 0, modestbranding: 1,
-            origin: window.location.origin,
-          },
-          events: {
-            onReady: () => {
-              console.log('[YTPlayer] Ready ✅');
-              window._ytPlayer = ytPlayerRef.current;
-              // Apply saved volume
-              ytPlayerRef.current?.setVolume(Math.round(savedVolNum * 100));
-            },
-            onStateChange: onYTStateChange,
-            onError: (e: any) => {
-              const code: number = e.data;
-              // 101/150 = embedding not allowed by video owner
-              // 100    = video not found / private
-              // 2      = invalid param
-              // 5      = HTML5 player error
-              const isBlocked = code === 101 || code === 150 || code === 100;
-              console.warn(`[YTPlayer] Error ${code} (${isBlocked ? 'blocked/unavailable' : 'playback error'})`);
-
-              setIsLoading(false);
-              setIsPlaying(false);
-
-              consecutiveFailsRef.current += 1;
-              const fails = consecutiveFailsRef.current;
-
-              if (fails >= 5) {
-                // Too many consecutive blocked songs — stop cascading
-                consecutiveFailsRef.current = 0;
-                showToast('Many songs blocked by YouTube — try different songs');
-                return; // Don't auto-skip any further
-              }
-
-              const msg = isBlocked
-                ? `Song unavailable (${fails}/5) — skipping...`
-                : `Playback error — skipping...`;
-              showToast(msg);
-              setTimeout(() => nextTrackRef.current?.(), 800);
-            },
-          },
-        });
-      } catch (err) {
-        console.error('[YTPlayer] Init failed:', err);
-      }
-    })();
-
-    // Media Session action handlers
+    // Media Session action handlers (for background lockscreen controls)
     if ('mediaSession' in navigator) {
-      navigator.mediaSession.setActionHandler('play',  () => togglePlayRef.current?.());
-      navigator.mediaSession.setActionHandler('pause', () => togglePlayRef.current?.());
-      navigator.mediaSession.setActionHandler('nexttrack',     () => playSongRef.current && nextTrack());
-      navigator.mediaSession.setActionHandler('previoustrack', () => playSongRef.current && prevTrack());
+      navigator.mediaSession.setActionHandler('play',  () => {
+        audio.play().catch(console.error);
+      });
+      navigator.mediaSession.setActionHandler('pause', () => {
+        audio.pause();
+      });
+      navigator.mediaSession.setActionHandler('nexttrack',     () => nextTrackRef.current?.());
+      navigator.mediaSession.setActionHandler('previoustrack', () => prevTrackRef.current?.());
       navigator.mediaSession.setActionHandler('seekto', (d) => {
-        if (d.seekTime !== undefined) seekToRef.current?.(d.seekTime);
+        if (d.seekTime !== undefined) {
+          audio.currentTime = d.seekTime;
+          setCurrentTime(d.seekTime);
+        }
       });
     }
 
@@ -299,13 +133,8 @@ export function useAudioPlayer() {
       audio.pause();
       audioRef.current = null;
       window._audioPlayer = null;
-      stopTimePolling();
-      if (bufferingTimeoutRef.current) clearTimeout(bufferingTimeoutRef.current);
-      try { ytPlayerRef.current?.destroy(); } catch (_) {}
-      if (ytDiv) ytDiv.remove();
-      ytPlayerRef.current = null;
     };
-  }, [onYTStateChange, stopTimePolling, showToast]);
+  }, [showToast]);
 
   // ── Track navigation ──────────────────────────────────────────────────────
   const nextTrack = useCallback(() => {
@@ -327,21 +156,22 @@ export function useAudioPlayer() {
   const prevTrack = useCallback(() => {
     const q = queueRef.current;
     if (q.length === 0) return;
-    // Restart if > 3s in
-    const curTime = isOfflineRef.current
-      ? (audioRef.current?.currentTime || 0)
-      : (ytPlayerRef.current?.getCurrentTime?.() || 0);
+    
+    const curTime = audioRef.current?.currentTime || 0;
     if (curTime > 3) {
-      if (isOfflineRef.current) { audioRef.current!.currentTime = 0; }
-      else { ytPlayerRef.current?.seekTo(0, true); }
+      if (audioRef.current) audioRef.current.currentTime = 0;
       setCurrentTime(0);
       return;
     }
+
     let prevIdx = queueIndexRef.current - 1;
     if (prevIdx < 0) prevIdx = loopModeRef.current === 'all' ? q.length - 1 : 0;
     queueIndexRef.current = prevIdx;
     playSongRef.current?.(q[prevIdx]);
   }, []);
+
+  const prevTrackRef = useRef(prevTrack);
+  useEffect(() => { prevTrackRef.current = prevTrack; }, [prevTrack]);
 
   // ── Main playSong ─────────────────────────────────────────────────────────
   const playSong = useCallback(async (song: Song, newQueue: Song[] = []) => {
@@ -368,7 +198,6 @@ export function useAudioPlayer() {
       }
     }
 
-    // Lock screen / notification metadata
     updateMediaSession(song);
 
     // History
@@ -378,74 +207,70 @@ export function useAudioPlayer() {
       return updated;
     });
 
-    // 1. Check for offline download first
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    // Check for offline download first
     let blobUrl: string | null = null;
     try {
       blobUrl = await downloadService.getOfflineUrl(song.id);
     } catch (_) {}
 
     if (blobUrl) {
-      // ── Offline mode: HTML5 Audio ─────────────────────────────────────────
-      console.log('[player] 🔇 Offline playback:', song.title);
-      isOfflineRef.current = true;
-      stopTimePolling();
-      // Stop YT player if running
-      try { ytPlayerRef.current?.stopVideo(); } catch (_) {}
-      const audio = audioRef.current!;
+      console.log('[player] Playing from local IndexedDB:', song.title);
       audio.src = blobUrl;
       audio.play().catch((e) => {
         console.error('[player] Offline play failed:', e);
         setIsLoading(false);
       });
     } else {
-      // ── Online mode: YouTube IFrame Player ───────────────────────────────
-      console.log('[player] ▶️ Online YT playback:', song.title);
-      isOfflineRef.current = false;
-      // Stop HTML5 audio if running
-      const audio = audioRef.current;
-      if (audio) { audio.pause(); audio.src = ''; }
-      // Load via YT IFrame API
-      if (ytPlayerRef.current) {
-        ytPlayerRef.current.loadVideoById(song.id);
-        // loadVideoById auto-plays; no extra .playVideo() needed
+      // Online mode: Try direct stream URL, fall back to server proxy
+      console.log('[player] Fetching direct stream URL for:', song.title);
+      let directStream = null;
+      try {
+        directStream = await getStreamUrl(song.id);
+      } catch (_) {}
+
+      if (directStream?.url) {
+        console.log(`[player] Direct stream URL succeeded (${directStream.source}) — playing via HTML5 Audio`);
+        audio.src = directStream.url;
+        audio.play().catch((err) => {
+          console.warn('[player] Direct stream play failed, falling back to server proxy:', err);
+          playViaServerProxy(song, audio);
+        });
       } else {
-        console.warn('[player] YT player not ready yet, retrying in 1s...');
-        setTimeout(() => {
-          if (ytPlayerRef.current) ytPlayerRef.current.loadVideoById(song.id);
-          else setIsLoading(false);
-        }, 1000);
+        console.warn('[player] Direct stream URL not resolved, playing via server proxy');
+        playViaServerProxy(song, audio);
       }
     }
-  }, [updateMediaSession, stopTimePolling]);
+  }, [updateMediaSession]);
 
   playSongRef.current = playSong;
 
+  function playViaServerProxy(song: Song, audio: HTMLAudioElement) {
+    console.log('[player] Playing via server proxy stream...');
+    audio.src = `${API_BASE_URL}/api/proxy-stream?id=${song.id}`;
+    audio.play().catch((err) => {
+      console.error('[player] Server proxy play failed:', err);
+      setIsLoading(false);
+      showToast('Playback failed — skipping track...');
+      setTimeout(() => nextTrackRef.current?.(), 1500);
+    });
+  }
+
   // ── Controls ──────────────────────────────────────────────────────────────
   const togglePlay = useCallback(() => {
-    if (!currentSongRef.current) return;
-    if (isOfflineRef.current) {
-      const audio = audioRef.current;
-      if (!audio) return;
-      audio.paused ? audio.play().catch(console.error) : audio.pause();
-    } else {
-      const yt = ytPlayerRef.current;
-      if (!yt) return;
-      const state = yt.getPlayerState?.();
-      state === YT_STATE.PLAYING ? yt.pauseVideo() : yt.playVideo();
-    }
+    if (!currentSongRef.current || !audioRef.current) return;
+    const audio = audioRef.current;
+    audio.paused ? audio.play().catch(console.error) : audio.pause();
   }, []);
 
-  // Expose togglePlay via ref so Media Session handler (in useEffect) can call it
   const togglePlayRef = useRef(togglePlay);
   useEffect(() => { togglePlayRef.current = togglePlay; }, [togglePlay]);
 
   const seekTo = useCallback((time: number) => {
     setCurrentTime(time);
-    if (isOfflineRef.current) {
-      if (audioRef.current) audioRef.current.currentTime = time;
-    } else {
-      ytPlayerRef.current?.seekTo(time, true);
-    }
+    if (audioRef.current) audioRef.current.currentTime = time;
   }, []);
 
   const seekToRef = useRef(seekTo);
@@ -455,7 +280,6 @@ export function useAudioPlayer() {
     setVolumeState(vol);
     localStorage.setItem('soundwave_volume', vol.toString());
     if (audioRef.current) audioRef.current.volume = vol;
-    ytPlayerRef.current?.setVolume(Math.round(vol * 100));
   }, []);
 
   const toggleLoop = useCallback(() => {
