@@ -221,11 +221,26 @@ export function useAudioPlayer() {
         setIsLoading(false);
       });
     } else {
-      // Online mode: Stream directly from server proxy (instant load, background audio support via ranges)
-      console.log('[player] Playing via server proxy stream:', song.title);
-      audio.src = `${API_BASE_URL}/api/proxy-stream?id=${song.id}`;
+      // Online mode: Try resolving direct GoogleVideo URL first to bypass datacenter IP blocks
+      console.log('[player] Resolving direct GoogleVideo URL for:', song.title);
+      try {
+        const metadataRes = await fetch(`${API_BASE_URL}/api/client-stream?id=${song.id}`);
+        if (!metadataRes.ok) throw new Error('Metadata resolver returned non-200');
+        const data = await metadataRes.json();
+        
+        if (data && data.url) {
+          console.log('[player] Direct URL resolved successfully, playing:', song.title);
+          audio.src = data.url;
+        } else {
+          throw new Error('No URL in metadata payload');
+        }
+      } catch (err: any) {
+        console.warn('[player] Direct URL resolution failed, falling back to server-proxied stream:', err.message);
+        audio.src = `${API_BASE_URL}/api/proxy-stream?id=${song.id}`;
+      }
+
       audio.play().catch((err) => {
-        console.error('[player] Server proxy play failed:', err);
+        console.error('[player] Playback failed:', err);
         setIsLoading(false);
         showToast('Playback failed — skipping track...');
         setTimeout(() => nextTrackRef.current?.(), 1500);

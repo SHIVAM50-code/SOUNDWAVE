@@ -321,26 +321,48 @@ app.get('/api/stream', async (req, res) => {
   return res.status(503).json({ error: 'All sources failed' });
 });
 
-// Temporary endpoint to debug ytdl-core on Render
-app.get('/api/test-ytdl', async (req, res) => {
-  const id = req.query.id || 't4H_Zoh7G5A';
-  try {
-    const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${id}`);
-    const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
-    res.json({
-      success: true,
-      title: info.videoDetails?.title,
-      formatsCount: info.formats?.length,
-      audioFormatsCount: audioFormats?.length,
-      firstAudioUrl: audioFormats[0]?.url?.substring(0, 100) + '...'
-    });
-  } catch (err) {
-    res.json({
-      success: false,
-      error: err.message,
-      stack: err.stack
-    });
+// Metadata proxy to get direct stream URL for the browser
+app.get('/api/client-stream', async (req, res) => {
+  const videoId = req.query.id;
+  if (!videoId) return res.status(400).json({ error: 'Missing video ID' });
+  console.log(`[client-stream] Resolving metadata for: ${videoId}`);
+
+  // Try Piped hosts first
+  for (const host of PIPED_HOSTS) {
+    try {
+      const r = await httpsGet(host, `/streams/${videoId}`, 4000);
+      if (r.status === 200) {
+        const data = JSON.parse(r.body);
+        const chosen = (data.audioStreams || []).find(s => s.mimeType?.includes('audio/mp4')) || data.audioStreams?.[0];
+        if (chosen?.url) {
+          console.log(`[client-stream] ✅ Resolved via Piped host: ${host}`);
+          return res.json({ url: chosen.url, type: chosen.mimeType });
+        }
+      }
+    } catch (e) {
+      console.warn(`[client-stream] Failed Piped host ${host}: ${e.message}`);
+    }
   }
+
+  // Fallback to Invidious hosts
+  for (const host of INVIDIOUS_HOSTS) {
+    try {
+      const r = await httpsGet(host, `/api/v1/videos/${videoId}?fields=adaptiveFormats`, 4000);
+      if (r.status === 200) {
+        const data = JSON.parse(r.body);
+        const chosen = (data.adaptiveFormats || []).find(f => f.type?.includes('audio/mp4')) || data.adaptiveFormats?.[0];
+        if (chosen?.url) {
+          console.log(`[client-stream] ✅ Resolved via Invidious host: ${host}`);
+          return res.json({ url: chosen.url, type: chosen.type });
+        }
+      }
+    } catch (e) {
+      console.warn(`[client-stream] Failed Invidious host ${host}: ${e.message}`);
+    }
+  }
+
+  console.error(`[client-stream] ❌ Fails to resolve stream URL for ${videoId}`);
+  return res.status(503).json({ error: 'Failed to resolve stream URL from all sources' });
 });
 
 
