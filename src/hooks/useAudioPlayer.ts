@@ -1,9 +1,6 @@
-// src/hooks/useAudioPlayer.ts
-// Unified HTML5 Audio Player (supports offline, online streaming, and flawless background playback)
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Song } from '../services/pipedService';
 import { downloadService } from '../services/downloadService';
-import { getStreamUrl } from '../services/streamService';
 import { API_BASE_URL } from '../services/apiConfig';
 
 export type LoopMode = 'none' | 'all' | 'one';
@@ -64,7 +61,7 @@ export function useAudioPlayer() {
     audio.preload = 'auto';
     audio.id = 'soundwave-audio';
     audioRef.current = audio;
-    window._audioPlayer = audio;
+    (window as any)._audioPlayer = audio;
 
     const savedVol = localStorage.getItem('soundwave_volume');
     const savedVolNum = savedVol ? parseFloat(savedVol) : 1;
@@ -132,7 +129,7 @@ export function useAudioPlayer() {
     return () => {
       audio.pause();
       audioRef.current = null;
-      window._audioPlayer = null;
+      (window as any)._audioPlayer = null;
     };
   }, [showToast]);
 
@@ -224,39 +221,19 @@ export function useAudioPlayer() {
         setIsLoading(false);
       });
     } else {
-      // Online mode: Try direct stream URL, fall back to server proxy
-      console.log('[player] Fetching direct stream URL for:', song.title);
-      let directStream = null;
-      try {
-        directStream = await getStreamUrl(song.id);
-      } catch (_) {}
-
-      if (directStream?.url) {
-        console.log(`[player] Direct stream URL succeeded (${directStream.source}) — playing via HTML5 Audio`);
-        audio.src = directStream.url;
-        audio.play().catch((err) => {
-          console.warn('[player] Direct stream play failed, falling back to server proxy:', err);
-          playViaServerProxy(song, audio);
-        });
-      } else {
-        console.warn('[player] Direct stream URL not resolved, playing via server proxy');
-        playViaServerProxy(song, audio);
-      }
+      // Online mode: Stream directly from server proxy (instant load, background audio support via ranges)
+      console.log('[player] Playing via server proxy stream:', song.title);
+      audio.src = `${API_BASE_URL}/api/proxy-stream?id=${song.id}`;
+      audio.play().catch((err) => {
+        console.error('[player] Server proxy play failed:', err);
+        setIsLoading(false);
+        showToast('Playback failed — skipping track...');
+        setTimeout(() => nextTrackRef.current?.(), 1500);
+      });
     }
   }, [updateMediaSession]);
 
   playSongRef.current = playSong;
-
-  function playViaServerProxy(song: Song, audio: HTMLAudioElement) {
-    console.log('[player] Playing via server proxy stream...');
-    audio.src = `${API_BASE_URL}/api/proxy-stream?id=${song.id}`;
-    audio.play().catch((err) => {
-      console.error('[player] Server proxy play failed:', err);
-      setIsLoading(false);
-      showToast('Playback failed — skipping track...');
-      setTimeout(() => nextTrackRef.current?.(), 1500);
-    });
-  }
 
   // ── Controls ──────────────────────────────────────────────────────────────
   const togglePlay = useCallback(() => {

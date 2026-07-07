@@ -276,48 +276,55 @@ app.get('/api/proxy-stream', async (req, res) => {
   const videoId = req.query.id;
   if (!videoId) return res.status(400).end('Missing video ID');
   res.setHeader('Access-Control-Allow-Origin', '*');
-  console.log(`\n[proxy-stream] Proxy request for: ${videoId}`);
+  res.setHeader('Accept-Ranges', 'bytes');
+  console.log(`\n[proxy-stream] Proxy request for: ${videoId} (Range: ${req.headers.range})`);
 
   // Try to resolve direct stream URL first
   const resolved = await resolveStreamUrl(videoId);
   if (resolved && resolved.url) {
     console.log(`[proxy-stream] Resolved direct stream URL via ${resolved.source}, attempting direct pipe`);
     try {
-      res.setHeader('Content-Type', resolved.type || 'audio/mp4');
       const parsedUrl = new URL(resolved.url);
+      const headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://www.youtube.com/'
+      };
+
+      if (req.headers.range) {
+        headers['Range'] = req.headers.range;
+      }
+
       const options = {
         hostname: parsedUrl.hostname,
         path: parsedUrl.pathname + parsedUrl.search,
         method: 'GET',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Referer': 'https://www.youtube.com/'
-        },
-        timeout: 20000
+        headers: headers,
+        timeout: 25000
       };
 
       const protocol = resolved.url.startsWith('https') ? https : http;
       const proxyReq = protocol.request(options, (proxyRes) => {
-        if (proxyRes.statusCode >= 200 && proxyRes.statusCode < 300) {
-          if (proxyRes.headers['content-length']) {
-            res.setHeader('Content-Length', proxyRes.headers['content-length']);
-          }
-          proxyRes.pipe(res);
-        } else {
-          console.warn(`[proxy-stream] Direct URL request returned HTTP ${proxyRes.statusCode}, falling back to yt-dlp spawn`);
-          fallbackSpawn(videoId, res);
-        }
+        // Forward status code (e.g. 200 OK or 206 Partial Content)
+        res.status(proxyRes.statusCode);
+
+        // Forward essential headers
+        if (proxyRes.headers['content-type']) res.setHeader('Content-Type', proxyRes.headers['content-type']);
+        if (proxyRes.headers['content-length']) res.setHeader('Content-Length', proxyRes.headers['content-length']);
+        if (proxyRes.headers['content-range']) res.setHeader('Content-Range', proxyRes.headers['content-range']);
+        if (proxyRes.headers['accept-ranges']) res.setHeader('Accept-Ranges', proxyRes.headers['accept-ranges']);
+
+        proxyRes.pipe(res);
       });
 
       proxyReq.on('error', (err) => {
         console.warn(`[proxy-stream] Direct URL request error: ${err.message}, falling back to yt-dlp spawn`);
-        fallbackSpawn(videoId, res);
+        fallbackSpawn(videoId, req, res);
       });
 
       proxyReq.on('timeout', () => {
         proxyReq.destroy();
         console.warn(`[proxy-stream] Direct URL request timed out, falling back to yt-dlp spawn`);
-        fallbackSpawn(videoId, res);
+        fallbackSpawn(videoId, req, res);
       });
 
       proxyReq.end();
@@ -328,10 +335,10 @@ app.get('/api/proxy-stream', async (req, res) => {
   }
 
   // Fallback if direct pipe failed/could not resolve URL
-  fallbackSpawn(videoId, res);
+  fallbackSpawn(videoId, req, res);
 });
 
-async function fallbackSpawn(videoId, res) {
+async function fallbackSpawn(videoId, req, res) {
   if (res.headersSent) return;
   const PIPE_CLIENTS = ['android', 'mweb', 'tv_embedded'];
   for (const client of PIPE_CLIENTS) {
@@ -348,6 +355,7 @@ async function fallbackSpawn(videoId, res) {
       proc.stdout.once('data', () => {
         hasData = true;
         res.setHeader('Content-Type', 'audio/mp4');
+        res.setHeader('Accept-Ranges', 'bytes');
         proc.stdout.pipe(res);
       });
       proc.stderr.on('data', d => console.log(`[proxy-stream-fallback] stderr: ${d.toString().trim().substring(0,80)}`));
