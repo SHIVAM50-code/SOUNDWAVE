@@ -72,7 +72,17 @@ let _innertubeCache = null;
 async function getInnertube() {
   if (_innertubeCache) return _innertubeCache;
   try {
-    const { Innertube } = await import('youtubei.js');
+    const { Innertube, Platform } = await import('youtubei.js');
+    
+    // Register the evaluator shim required by youtubei.js to run YouTube's obfuscated signature deciphering scripts
+    if (Platform?.shim) {
+      Platform.shim.eval = (data) => {
+        const code = typeof data === 'object' && data !== null ? (data.output || data.code || '') : data;
+        return (new Function(code))();
+      };
+      console.log('[youtubei] Registered Platform.shim.eval');
+    }
+
     _innertubeCache = await Innertube.create({
       retrieve_player: true,
       generate_session_locally: true,
@@ -94,26 +104,42 @@ async function tryYoutubei(videoId) {
     for (const client of ['ANDROID_MUSIC', 'ANDROID', 'YTMUSIC_ANDROID']) {
       try {
         console.log(`[stream] Trying youtubei.js (client=${client})...`);
-        const info = await yt.getBasicInfo(videoId, client);
-        
-        // Decipher the signatures to populate streaming URLs (YouTube deciphers with its own obfuscated script)
-        try {
-          await info.decipher();
-        } catch (decErr) {
-          console.log(`[stream] youtubei (${client}) decipher failed: ${decErr.message}`);
-        }
-
+        const info = await yt.getInfo(videoId, client);
         const formats = info.streaming_data?.adaptive_formats || [];
+        const audioFormats = formats.filter(f => f.mime_type?.startsWith('audio/'));
+        console.log(`[stream] youtubei formats found: ${formats.length}, audio: ${audioFormats.length}`);
+        audioFormats.forEach((f, i) => {
+          console.log(`[stream] audio format ${i} - itag: ${f.itag}, url: ${f.url ? 'yes' : 'no'}, cipher: ${f.signature_cipher || f.cipher ? 'yes' : 'no'}`);
+        });
 
         // Prefer m4a (itag 140) for best compatibility
         const m4a = formats.find(f => f.itag === 140 || f.mime_type?.startsWith('audio/mp4'));
         const webm = formats.find(f => f.mime_type?.startsWith('audio/webm'));
         const chosen = m4a || webm || formats.find(f => f.mime_type?.startsWith('audio/'));
 
-        if (chosen?.url) {
-          console.log(`[stream] ✅ youtubei (${client}) | ${chosen.mime_type} | itag:${chosen.itag}`);
-          const type = chosen.mime_type?.startsWith('audio/mp4') ? 'audio/mp4' : 'audio/webm';
-          return { url: chosen.url, type, source: `youtubei:${client}` };
+        if (chosen) {
+          console.log(`[stream] chosen.url:`, chosen.url ? chosen.url.substring(0, 50) + '...' : 'empty');
+          console.log(`[stream] chosen.signature_cipher:`, chosen.signature_cipher ? chosen.signature_cipher.substring(0, 50) + '...' : 'empty');
+          console.log(`[stream] chosen.cipher:`, chosen.cipher ? chosen.cipher.substring(0, 50) + '...' : 'empty');
+
+          try {
+            // Decipher the URL using the Innertube session player
+            const urlObj = await chosen.decipher(yt.session.player);
+            const url = typeof urlObj === 'string' ? urlObj : urlObj?.href || urlObj?.toString?.();
+            if (url) {
+              console.log(`[stream] ✅ youtubei (${client}) | deciphered successfully | itag:${chosen.itag}`);
+              const type = chosen.mime_type?.startsWith('audio/mp4') ? 'audio/mp4' : 'audio/webm';
+              return { url, type, source: `youtubei:${client}` };
+            }
+          } catch (decErr) {
+            console.log(`[stream] youtubei (${client}) decipher failed: ${decErr.message}`);
+          }
+
+          if (chosen.url) {
+            console.log(`[stream] ✅ youtubei (${client}) | clear URL | itag:${chosen.itag}`);
+            const type = chosen.mime_type?.startsWith('audio/mp4') ? 'audio/mp4' : 'audio/webm';
+            return { url: chosen.url, type, source: `youtubei:${client}` };
+          }
         }
         console.log(`[stream] youtubei (${client}): no audio URL found`);
       } catch (e) {
@@ -168,13 +194,18 @@ async function tryYtDlp(videoId) {
 async function tryYtdlCore(videoId) {
   if (!ytdl) return null;
   try {
-    const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${videoId}`, {
-      requestOptions: { headers: { 'User-Agent': 'com.google.android.youtube/17.31.35 (Linux; U; Android 11) gzip' } }
-    });
+    console.log(`[stream] Trying @distube/ytdl-core...`);
+    const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${videoId}`);
     const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
     const chosen = audioFormats.find(f => f.itag === 140) || audioFormats[0];
-    return { url: chosen.url, type: chosen.mimeType, source: 'ytdl-core' };
-  } catch (e) { return null; }
+    if (chosen?.url) {
+      console.log(`[stream] ✅ ytdl-core succeeded | itag:${chosen.itag}`);
+      return { url: chosen.url, type: chosen.mimeType, source: 'ytdl-core' };
+    }
+  } catch (e) {
+    console.log(`[stream] ytdl-core failed: ${e.message?.substring(0, 100)}`);
+  }
+  return null;
 }
 
 // ── Strategy 3: Piped & Invidious ────────────────────────────────────────────
@@ -252,25 +283,25 @@ app.get('/api/search', async (req, res) => {
 
 // ── Helper: Resolve Stream URL using all strategies ─────────────────────────
 async function resolveStreamUrl(videoId) {
-  // Strategy 0: youtubei.js Innertube (most reliable on cloud IPs)
+  // Strategy 0: ytdl-core (active fork @distube/ytdl-core — fastest and bypasses cloud blocks)
+  const ytdlResult = await tryYtdlCore(videoId);
+  if (ytdlResult?.url) return ytdlResult;
+
+  // Strategy 1: youtubei.js Innertube
   const youtubeiResult = await tryYoutubei(videoId);
   if (youtubeiResult?.url) return youtubeiResult;
 
-  // Strategy 1: yt-dlp with android/mweb/tv_embedded clients
+  // Strategy 2: yt-dlp with android/mweb/tv_embedded clients
   const ytdlpResult = await tryYtDlp(videoId);
   if (ytdlpResult?.url) return ytdlpResult;
 
-  // Strategy 2: Piped instances
+  // Strategy 3: Piped instances
   const pipedResult = await tryPiped(videoId);
   if (pipedResult?.url) return pipedResult;
 
-  // Strategy 3: Invidious instances
+  // Strategy 4: Invidious instances
   const invResult = await tryInvidious(videoId);
   if (invResult?.url) return invResult;
-
-  // Strategy 4: ytdl-core android
-  const ytdlResult = await tryYtdlCore(videoId);
-  if (ytdlResult?.url) return ytdlResult;
 
   return null;
 }
