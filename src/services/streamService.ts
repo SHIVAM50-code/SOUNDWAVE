@@ -14,13 +14,10 @@ export interface StreamResult {
 // Piped instances with CORS enabled — called directly from the browser
 const PIPED_INSTANCES = [
   'https://pipedapi.kavin.rocks',
-  'https://pipedapi.adminforge.de',
-  'https://pipedapi.darkness.services',
-  'https://pipedapi.in.projectsegfau.lt',
-  'https://pipedapi.us.projectsegfau.lt',
-  'https://piped-api.lunar.icu',
-  'https://pipedapi.moomoo.me',
-  'https://pipedapi.tokhmi.xyz',
+  'https://piped-api.garudalinux.org',
+  'https://piped-api.blackgoku.moe',
+  'https://pipedapi.lunar.icu',
+  'https://pipedapi.privacydev.net'
 ];
 
 async function tryPipedBrowser(videoId: string): Promise<StreamResult | null> {

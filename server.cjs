@@ -95,6 +95,14 @@ async function tryYoutubei(videoId) {
       try {
         console.log(`[stream] Trying youtubei.js (client=${client})...`);
         const info = await yt.getBasicInfo(videoId, client);
+        
+        // Decipher the signatures to populate streaming URLs (YouTube deciphers with its own obfuscated script)
+        try {
+          await info.decipher();
+        } catch (decErr) {
+          console.log(`[stream] youtubei (${client}) decipher failed: ${decErr.message}`);
+        }
+
         const formats = info.streaming_data?.adaptive_formats || [];
 
         // Prefer m4a (itag 140) for best compatibility
@@ -170,8 +178,20 @@ async function tryYtdlCore(videoId) {
 }
 
 // ── Strategy 3: Piped & Invidious ────────────────────────────────────────────
-const PIPED_HOSTS = ['pipedapi.kavin.rocks', 'pipedapi.adminforge.de', 'pipedapi.in.projectsegfau.lt', 'piped-api.lunar.icu'];
-const INVIDIOUS_HOSTS = ['inv.tux.pizza', 'invidious.perennialte.ch', 'iv.melmac.space', 'yt.cdaut.de'];
+const PIPED_HOSTS = [
+  'pipedapi.kavin.rocks',
+  'piped-api.garudalinux.org',
+  'piped-api.blackgoku.moe',
+  'pipedapi.lunar.icu',
+  'pipedapi.privacydev.net'
+];
+const INVIDIOUS_HOSTS = [
+  'yewtu.be',
+  'invidious.nerdvpn.de',
+  'invidious.flokinet.to',
+  'inv.nadeko.net',
+  'iv.melmac.space'
+];
 
 async function tryPiped(videoId) {
   for (const host of PIPED_HOSTS) {
