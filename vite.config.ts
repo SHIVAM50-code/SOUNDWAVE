@@ -23,6 +23,8 @@ export default defineConfig({
         ],
       },
       workbox: {
+        skipWaiting: true,
+        clientsClaim: true,
         // Cache app shell (HTML, JS, CSS)
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         // Network-first for API calls (fallback to cache)
