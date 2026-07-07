@@ -321,6 +321,28 @@ app.get('/api/stream', async (req, res) => {
   return res.status(503).json({ error: 'All sources failed' });
 });
 
+// Temporary endpoint to debug ytdl-core on Render
+app.get('/api/test-ytdl', async (req, res) => {
+  const id = req.query.id || 't4H_Zoh7G5A';
+  try {
+    const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${id}`);
+    const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
+    res.json({
+      success: true,
+      title: info.videoDetails?.title,
+      formatsCount: info.formats?.length,
+      audioFormatsCount: audioFormats?.length,
+      firstAudioUrl: audioFormats[0]?.url?.substring(0, 100) + '...'
+    });
+  } catch (err) {
+    res.json({
+      success: false,
+      error: err.message,
+      stack: err.stack
+    });
+  }
+});
+
 
 // ── GET /api/proxy-stream ────────────────────────────────────────────────────
 app.get('/api/proxy-stream', async (req, res) => {
