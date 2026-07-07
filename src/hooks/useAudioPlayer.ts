@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Song } from '../services/pipedService';
 import { downloadService } from '../services/downloadService';
-import { API_BASE_URL } from '../services/apiConfig';
+import { youtubePlayer } from '../services/youtubePlayer';
 
 export type LoopMode = 'none' | 'all' | 'one';
 
@@ -55,7 +55,7 @@ export function useAudioPlayer() {
     navigator.mediaSession.playbackState = 'playing';
   }, []);
 
-  // ── Initialize HTML5 Audio ──────────────────────────────────────────────────
+  // ── Initialize HTML5 Audio (For Offline Playback) ──────────────────────────
   useEffect(() => {
     const audio = new Audio();
     audio.preload = 'auto';
@@ -66,65 +66,65 @@ export function useAudioPlayer() {
     const savedVol = localStorage.getItem('soundwave_volume');
     const savedVolNum = savedVol ? parseFloat(savedVol) : 1;
     audio.volume = savedVolNum;
-    setVolumeState(savedVolNum);
 
-    // HTML5 Audio Event Listeners
     audio.onplay = () => {
-      setIsPlaying(true);
-      setIsLoading(false);
-      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+      const isOffline = !!audio.src;
+      if (isOffline) {
+        setIsPlaying(true);
+        setIsLoading(false);
+        if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+      }
     };
     audio.onpause = () => {
-      setIsPlaying(false);
-      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
+      const isOffline = !!audio.src;
+      if (isOffline) {
+        setIsPlaying(false);
+        if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
+      }
     };
     audio.onwaiting = () => {
-      setIsLoading(true);
+      const isOffline = !!audio.src;
+      if (isOffline) setIsLoading(true);
     };
     audio.onplaying = () => {
-      setIsLoading(false);
-      setIsPlaying(true);
+      const isOffline = !!audio.src;
+      if (isOffline) {
+        setIsLoading(false);
+        setIsPlaying(true);
+      }
     };
     audio.ontimeupdate = () => {
-      setCurrentTime(audio.currentTime);
+      const isOffline = !!audio.src;
+      if (isOffline) setCurrentTime(audio.currentTime);
     };
     audio.ondurationchange = () => {
-      if (audio.duration && !isNaN(audio.duration)) setDuration(audio.duration);
+      const isOffline = !!audio.src;
+      if (isOffline && audio.duration && !isNaN(audio.duration)) {
+        setDuration(audio.duration);
+      }
     };
     audio.onended = () => {
-      setIsPlaying(false);
-      if (loopModeRef.current === 'one') {
-        audio.currentTime = 0;
-        audio.play().catch(console.error);
-      } else {
-        nextTrackRef.current?.();
+      const isOffline = !!audio.src;
+      if (isOffline) {
+        setIsPlaying(false);
+        if (loopModeRef.current === 'one') {
+          audio.currentTime = 0;
+          audio.play().catch(console.error);
+        } else {
+          nextTrackRef.current?.();
+        }
       }
     };
     audio.onerror = (e) => {
-      console.error('[audio] Playback error:', e);
-      setIsLoading(false);
-      setIsPlaying(false);
-      showToast('Playback error — skipping...');
-      setTimeout(() => nextTrackRef.current?.(), 1500);
+      const isOffline = !!audio.src;
+      if (isOffline) {
+        console.error('[audio] Offline playback error:', e);
+        setIsLoading(false);
+        setIsPlaying(false);
+        showToast('Playback error — skipping...');
+        setTimeout(() => nextTrackRef.current?.(), 1500);
+      }
     };
-
-    // Media Session action handlers (for background lockscreen controls)
-    if ('mediaSession' in navigator) {
-      navigator.mediaSession.setActionHandler('play',  () => {
-        audio.play().catch(console.error);
-      });
-      navigator.mediaSession.setActionHandler('pause', () => {
-        audio.pause();
-      });
-      navigator.mediaSession.setActionHandler('nexttrack',     () => nextTrackRef.current?.());
-      navigator.mediaSession.setActionHandler('previoustrack', () => prevTrackRef.current?.());
-      navigator.mediaSession.setActionHandler('seekto', (d) => {
-        if (d.seekTime !== undefined) {
-          audio.currentTime = d.seekTime;
-          setCurrentTime(d.seekTime);
-        }
-      });
-    }
 
     return () => {
       audio.pause();
@@ -132,6 +132,104 @@ export function useAudioPlayer() {
       (window as any)._audioPlayer = null;
     };
   }, [showToast]);
+
+  // ── Initialize YouTube Player Callbacks ──────────────────────────────────────
+  useEffect(() => {
+    // Volume initialization
+    const savedVol = localStorage.getItem('soundwave_volume');
+    const savedVolNum = savedVol ? parseFloat(savedVol) : 1;
+    setVolumeState(savedVolNum);
+    youtubePlayer.setVolume(savedVolNum);
+
+    // Register callbacks to sync YouTube Player state with React state
+    youtubePlayer.onStateChange((state) => {
+      const audio = audioRef.current;
+      const isOffline = audio && !!audio.src;
+      if (isOffline) return; // Ignore YouTube events if playing offline
+
+      // YT.PlayerState: -1 (unstarted), 0 (ended), 1 (playing), 2 (paused), 3 (buffering), 5 (cued)
+      if (state === 1) { // Playing
+        setIsPlaying(true);
+        setIsLoading(false);
+        if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+        
+        // Sync duration once details load
+        const d = youtubePlayer.getDuration();
+        if (d && !isNaN(d)) setDuration(d);
+      } else if (state === 2) { // Paused
+        setIsPlaying(false);
+        if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
+      } else if (state === 3) { // Buffering / Loading
+        setIsLoading(true);
+      } else if (state === -1 || state === 5) {
+        setIsLoading(false);
+      }
+    });
+
+    youtubePlayer.onTimeUpdate((time) => {
+      const audio = audioRef.current;
+      const isOffline = audio && !!audio.src;
+      if (isOffline) return;
+
+      setCurrentTime(time);
+      
+      const d = youtubePlayer.getDuration();
+      if (d && d > 0 && !isNaN(d)) setDuration(d);
+    });
+
+    youtubePlayer.onEnded(() => {
+      const audio = audioRef.current;
+      const isOffline = audio && !!audio.src;
+      if (isOffline) return;
+
+      setIsPlaying(false);
+      if (loopModeRef.current === 'one') {
+        const curSong = currentSongRef.current;
+        if (curSong) {
+          youtubePlayer.loadAndPlay(curSong.id);
+        }
+      } else {
+        nextTrackRef.current?.();
+      }
+    });
+
+    // Media Session action handlers (for background lockscreen controls)
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.setActionHandler('play',  () => {
+        const audio = audioRef.current;
+        if (audio && audio.src) {
+          audio.play().catch(console.error);
+        } else {
+          youtubePlayer.play();
+        }
+      });
+      navigator.mediaSession.setActionHandler('pause', () => {
+        const audio = audioRef.current;
+        if (audio && audio.src) {
+          audio.pause();
+        } else {
+          youtubePlayer.pause();
+        }
+      });
+      navigator.mediaSession.setActionHandler('nexttrack',     () => nextTrackRef.current?.());
+      navigator.mediaSession.setActionHandler('previoustrack', () => prevTrackRef.current?.());
+      navigator.mediaSession.setActionHandler('seekto', (d) => {
+        if (d.seekTime !== undefined) {
+          const audio = audioRef.current;
+          if (audio && audio.src) {
+            audio.currentTime = d.seekTime;
+          } else {
+            youtubePlayer.seekTo(d.seekTime);
+          }
+          setCurrentTime(d.seekTime);
+        }
+      });
+    }
+
+    return () => {
+      youtubePlayer.pause();
+    };
+  }, []);
 
   // ── Track navigation ──────────────────────────────────────────────────────
   const nextTrack = useCallback(() => {
@@ -154,9 +252,18 @@ export function useAudioPlayer() {
     const q = queueRef.current;
     if (q.length === 0) return;
     
-    const curTime = audioRef.current?.currentTime || 0;
+    // Check if we should restart the current song
+    let curTime = 0;
+    const audio = audioRef.current;
+    if (audio && audio.src) {
+      curTime = audio.currentTime;
+    } else {
+      curTime = youtubePlayer.getCurrentTime();
+    }
+
     if (curTime > 3) {
-      if (audioRef.current) audioRef.current.currentTime = 0;
+      if (audio && audio.src) audio.currentTime = 0;
+      else youtubePlayer.seekTo(0);
       setCurrentTime(0);
       return;
     }
@@ -204,47 +311,36 @@ export function useAudioPlayer() {
       return updated;
     });
 
-    const audio = audioRef.current;
-    if (!audio) return;
-
     // Check for offline download first
     let blobUrl: string | null = null;
     try {
       blobUrl = await downloadService.getOfflineUrl(song.id);
     } catch (_) {}
 
+    const audio = audioRef.current;
+
     if (blobUrl) {
       console.log('[player] Playing from local IndexedDB:', song.title);
-      audio.src = blobUrl;
-      audio.play().catch((e) => {
-        console.error('[player] Offline play failed:', e);
-        setIsLoading(false);
-      });
-    } else {
-      // Online mode: Try resolving direct GoogleVideo URL first to bypass datacenter IP blocks
-      console.log('[player] Resolving direct GoogleVideo URL for:', song.title);
-      try {
-        const metadataRes = await fetch(`${API_BASE_URL}/api/client-stream?id=${song.id}`);
-        if (!metadataRes.ok) throw new Error('Metadata resolver returned non-200');
-        const data = await metadataRes.json();
-        
-        if (data && data.url) {
-          console.log('[player] Direct URL resolved successfully, playing:', song.title);
-          audio.src = data.url;
-        } else {
-          throw new Error('No URL in metadata payload');
-        }
-      } catch (err: any) {
-        console.warn('[player] Direct URL resolution failed, falling back to server-proxied stream:', err.message);
-        audio.src = `${API_BASE_URL}/api/proxy-stream?id=${song.id}`;
+      // Pause YouTube Player
+      youtubePlayer.pause();
+      
+      // Load and play native audio
+      if (audio) {
+        audio.src = blobUrl;
+        audio.play().catch((e) => {
+          console.error('[player] Offline play failed:', e);
+          setIsLoading(false);
+        });
       }
-
-      audio.play().catch((err) => {
-        console.error('[player] Playback failed:', err);
-        setIsLoading(false);
-        showToast('Playback failed — skipping track...');
-        setTimeout(() => nextTrackRef.current?.(), 1500);
-      });
+    } else {
+      // Clear offline audio src
+      if (audio) {
+        audio.pause();
+        audio.src = '';
+      }
+      
+      console.log('[player] Playing client-side via YouTube IFrame:', song.title);
+      youtubePlayer.loadAndPlay(song.id);
     }
   }, [updateMediaSession]);
 
@@ -252,17 +348,30 @@ export function useAudioPlayer() {
 
   // ── Controls ──────────────────────────────────────────────────────────────
   const togglePlay = useCallback(() => {
-    if (!currentSongRef.current || !audioRef.current) return;
+    if (!currentSongRef.current) return;
     const audio = audioRef.current;
-    audio.paused ? audio.play().catch(console.error) : audio.pause();
-  }, []);
+    if (audio && audio.src) { // Offline Mode
+      audio.paused ? audio.play().catch(console.error) : audio.pause();
+    } else { // Online Mode
+      if (isPlaying) {
+        youtubePlayer.pause();
+      } else {
+        youtubePlayer.play();
+      }
+    }
+  }, [isPlaying]);
 
   const togglePlayRef = useRef(togglePlay);
   useEffect(() => { togglePlayRef.current = togglePlay; }, [togglePlay]);
 
   const seekTo = useCallback((time: number) => {
     setCurrentTime(time);
-    if (audioRef.current) audioRef.current.currentTime = time;
+    const audio = audioRef.current;
+    if (audio && audio.src) {
+      audio.currentTime = time;
+    } else {
+      youtubePlayer.seekTo(time);
+    }
   }, []);
 
   const seekToRef = useRef(seekTo);
@@ -272,6 +381,7 @@ export function useAudioPlayer() {
     setVolumeState(vol);
     localStorage.setItem('soundwave_volume', vol.toString());
     if (audioRef.current) audioRef.current.volume = vol;
+    youtubePlayer.setVolume(vol);
   }, []);
 
   const toggleLoop = useCallback(() => {
