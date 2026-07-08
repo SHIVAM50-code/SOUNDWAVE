@@ -27,6 +27,7 @@ export function useAudioPlayer() {
   const isShuffleRef        = useRef(false);
   const playSongRef         = useRef<((song: Song, newQueue?: Song[]) => void) | null>(null);
   const nextTrackRef        = useRef<(() => void) | null>(null);
+  const isOfflineRef        = useRef(false);
 
   // Sync state → refs
   useEffect(() => { currentSongRef.current = currentSong; }, [currentSong]);
@@ -68,62 +69,52 @@ export function useAudioPlayer() {
     audio.volume = savedVolNum;
 
     audio.onplay = () => {
-      const isOffline = !!audio.src;
-      if (isOffline) {
-        setIsPlaying(true);
-        setIsLoading(false);
-        if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
-      }
+      if (!isOfflineRef.current) return;
+      setIsPlaying(true);
+      setIsLoading(false);
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
     };
     audio.onpause = () => {
-      const isOffline = !!audio.src;
-      if (isOffline) {
-        setIsPlaying(false);
-        if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
-      }
+      if (!isOfflineRef.current) return;
+      setIsPlaying(false);
+      if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
     };
     audio.onwaiting = () => {
-      const isOffline = !!audio.src;
-      if (isOffline) setIsLoading(true);
+      if (!isOfflineRef.current) return;
+      setIsLoading(true);
     };
     audio.onplaying = () => {
-      const isOffline = !!audio.src;
-      if (isOffline) {
-        setIsLoading(false);
-        setIsPlaying(true);
-      }
+      if (!isOfflineRef.current) return;
+      setIsLoading(false);
+      setIsPlaying(true);
     };
     audio.ontimeupdate = () => {
-      const isOffline = !!audio.src;
-      if (isOffline) setCurrentTime(audio.currentTime);
+      if (!isOfflineRef.current) return;
+      setCurrentTime(audio.currentTime);
     };
     audio.ondurationchange = () => {
-      const isOffline = !!audio.src;
-      if (isOffline && audio.duration && !isNaN(audio.duration)) {
+      if (!isOfflineRef.current) return;
+      if (audio.duration && !isNaN(audio.duration)) {
         setDuration(audio.duration);
       }
     };
     audio.onended = () => {
-      const isOffline = !!audio.src;
-      if (isOffline) {
-        setIsPlaying(false);
-        if (loopModeRef.current === 'one') {
-          audio.currentTime = 0;
-          audio.play().catch(console.error);
-        } else {
-          nextTrackRef.current?.();
-        }
+      if (!isOfflineRef.current) return;
+      setIsPlaying(false);
+      if (loopModeRef.current === 'one') {
+        audio.currentTime = 0;
+        audio.play().catch(console.error);
+      } else {
+        nextTrackRef.current?.();
       }
     };
     audio.onerror = (e) => {
-      const isOffline = !!audio.src;
-      if (isOffline) {
-        console.error('[audio] Offline playback error:', e);
-        setIsLoading(false);
-        setIsPlaying(false);
-        showToast('Playback error — skipping...');
-        setTimeout(() => nextTrackRef.current?.(), 1500);
-      }
+      if (!isOfflineRef.current) return;
+      console.error('[audio] Offline playback error:', e);
+      setIsLoading(false);
+      setIsPlaying(false);
+      showToast('Playback error — skipping...');
+      setTimeout(() => nextTrackRef.current?.(), 1500);
     };
 
     return () => {
@@ -143,9 +134,7 @@ export function useAudioPlayer() {
 
     // Register callbacks to sync YouTube Player state with React state
     youtubePlayer.onStateChange((state) => {
-      const audio = audioRef.current;
-      const isOffline = audio && !!audio.src;
-      if (isOffline) return; // Ignore YouTube events if playing offline
+      if (isOfflineRef.current) return; // Ignore YouTube events if playing offline
 
       // YT.PlayerState: -1 (unstarted), 0 (ended), 1 (playing), 2 (paused), 3 (buffering), 5 (cued)
       if (state === 1) { // Playing
@@ -167,9 +156,7 @@ export function useAudioPlayer() {
     });
 
     youtubePlayer.onTimeUpdate((time) => {
-      const audio = audioRef.current;
-      const isOffline = audio && !!audio.src;
-      if (isOffline) return;
+      if (isOfflineRef.current) return;
 
       setCurrentTime(time);
       
@@ -178,9 +165,7 @@ export function useAudioPlayer() {
     });
 
     youtubePlayer.onEnded(() => {
-      const audio = audioRef.current;
-      const isOffline = audio && !!audio.src;
-      if (isOffline) return;
+      if (isOfflineRef.current) return;
 
       setIsPlaying(false);
       if (loopModeRef.current === 'one') {
@@ -197,16 +182,16 @@ export function useAudioPlayer() {
     if ('mediaSession' in navigator) {
       navigator.mediaSession.setActionHandler('play',  () => {
         const audio = audioRef.current;
-        if (audio && audio.src) {
-          audio.play().catch(console.error);
+        if (isOfflineRef.current) {
+          if (audio) audio.play().catch(console.error);
         } else {
           youtubePlayer.play();
         }
       });
       navigator.mediaSession.setActionHandler('pause', () => {
         const audio = audioRef.current;
-        if (audio && audio.src) {
-          audio.pause();
+        if (isOfflineRef.current) {
+          if (audio) audio.pause();
         } else {
           youtubePlayer.pause();
         }
@@ -216,8 +201,8 @@ export function useAudioPlayer() {
       navigator.mediaSession.setActionHandler('seekto', (d) => {
         if (d.seekTime !== undefined) {
           const audio = audioRef.current;
-          if (audio && audio.src) {
-            audio.currentTime = d.seekTime;
+          if (isOfflineRef.current) {
+            if (audio) audio.currentTime = d.seekTime;
           } else {
             youtubePlayer.seekTo(d.seekTime);
           }
@@ -255,14 +240,14 @@ export function useAudioPlayer() {
     // Check if we should restart the current song
     let curTime = 0;
     const audio = audioRef.current;
-    if (audio && audio.src) {
-      curTime = audio.currentTime;
+    if (isOfflineRef.current) {
+      curTime = audio ? audio.currentTime : 0;
     } else {
       curTime = youtubePlayer.getCurrentTime();
     }
 
     if (curTime > 3) {
-      if (audio && audio.src) audio.currentTime = 0;
+      if (isOfflineRef.current && audio) audio.currentTime = 0;
       else youtubePlayer.seekTo(0);
       setCurrentTime(0);
       return;
@@ -321,6 +306,7 @@ export function useAudioPlayer() {
 
     if (blobUrl) {
       console.log('[player] Playing from local IndexedDB:', song.title);
+      isOfflineRef.current = true;
       // Pause YouTube Player
       youtubePlayer.pause();
       
@@ -333,13 +319,13 @@ export function useAudioPlayer() {
         });
       }
     } else {
+      console.log('[player] Playing client-side via YouTube IFrame:', song.title);
+      isOfflineRef.current = false;
       // Clear offline audio src
       if (audio) {
         audio.pause();
         audio.src = '';
       }
-      
-      console.log('[player] Playing client-side via YouTube IFrame:', song.title);
       youtubePlayer.loadAndPlay(song.id);
     }
   }, [updateMediaSession]);
@@ -350,8 +336,10 @@ export function useAudioPlayer() {
   const togglePlay = useCallback(() => {
     if (!currentSongRef.current) return;
     const audio = audioRef.current;
-    if (audio && audio.src) { // Offline Mode
-      audio.paused ? audio.play().catch(console.error) : audio.pause();
+    if (isOfflineRef.current) { // Offline Mode
+      if (audio) {
+        audio.paused ? audio.play().catch(console.error) : audio.pause();
+      }
     } else { // Online Mode
       if (isPlaying) {
         youtubePlayer.pause();
@@ -367,8 +355,8 @@ export function useAudioPlayer() {
   const seekTo = useCallback((time: number) => {
     setCurrentTime(time);
     const audio = audioRef.current;
-    if (audio && audio.src) {
-      audio.currentTime = time;
+    if (isOfflineRef.current) {
+      if (audio) audio.currentTime = time;
     } else {
       youtubePlayer.seekTo(time);
     }
