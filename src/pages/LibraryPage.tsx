@@ -1,6 +1,6 @@
 // src/pages/LibraryPage.tsx
 import { useState, useEffect } from 'react';
-import { Heart, Clock, Download, Trash2, Wifi, WifiOff, List, Plus, X } from 'lucide-react';
+import { Heart, Clock, Download, Trash2, Wifi, WifiOff, List, Plus, X, GripVertical } from 'lucide-react';
 import { downloadService, type DownloadedSong } from '../services/downloadService';
 import type { Song } from '../services/pipedService';
 import { SongCard } from '../components/SongCard';
@@ -17,24 +17,78 @@ interface Props {
   onCreatePlaylist: (name: string) => void;
   onDeletePlaylist: (id: string) => void;
   onAddToPlaylist: (playlistId: string, song: Song) => void;
+  onRemoveFromPlaylist: (playlistId: string, songId: string) => void;
+  onReorderPlaylist: (playlistId: string, songs: Song[]) => void;
 }
 
-export function LibraryPage({ player, likedSongs, onToggleLike, playlists, onCreatePlaylist, onDeletePlaylist }: Props) {
+export function LibraryPage({ 
+  player, 
+  likedSongs, 
+  onToggleLike, 
+  playlists, 
+  onCreatePlaylist, 
+  onDeletePlaylist,
+  onRemoveFromPlaylist,
+  onReorderPlaylist 
+}: Props) {
   const [activeTab, setActiveTab] = useState<LibTab>('liked');
   const [downloads, setDownloads] = useState<DownloadedSong[]>([]);
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [showNewPlaylist, setShowNewPlaylist] = useState(false);
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
+  
+  // Drag and drop state
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
 
+  // Sync downloads list
   useEffect(() => {
     if (activeTab === 'downloads') {
       downloadService.getAllDownloads().then(setDownloads);
     }
   }, [activeTab]);
 
+  // Reset playlist selection when active tab changes
+  useEffect(() => {
+    setSelectedPlaylistId(null);
+  }, [activeTab]);
+
   const handleDeleteDownload = async (songId: string) => {
     await downloadService.deleteDownload(songId);
     setDownloads(prev => prev.filter(d => d.id !== songId));
   };
+
+  const moveSong = (index: number, direction: 'up' | 'down') => {
+    if (!selectedPlaylist) return;
+    const songs = [...selectedPlaylist.songs];
+    const newIndex = direction === 'up' ? index - 1 : index + 1;
+    if (newIndex < 0 || newIndex >= songs.length) return;
+    
+    // Swap songs
+    const temp = songs[index];
+    songs[index] = songs[newIndex];
+    songs[newIndex] = temp;
+    
+    onReorderPlaylist(selectedPlaylist.id, songs);
+  };
+
+  const handleDragStart = (index: number) => {
+    setDraggedIndex(index);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+  };
+
+  const handleDrop = (index: number) => {
+    if (draggedIndex === null || draggedIndex === index || !selectedPlaylist) return;
+    const reordered = [...selectedPlaylist.songs];
+    const [moved] = reordered.splice(draggedIndex, 1);
+    reordered.splice(index, 0, moved);
+    onReorderPlaylist(selectedPlaylist.id, reordered);
+    setDraggedIndex(null);
+  };
+
+  const selectedPlaylist = playlists.find(p => p.id === selectedPlaylistId);
 
   const tabs: { id: LibTab; label: string; icon: React.ReactNode; count?: number }[] = [
     { id: 'liked',     label: 'Liked',     icon: <Heart size={15} />,     count: likedSongs.length },
@@ -43,6 +97,110 @@ export function LibraryPage({ player, likedSongs, onToggleLike, playlists, onCre
     { id: 'playlists', label: 'Playlists', icon: <List size={15} />,      count: playlists.length },
   ];
 
+  // ── Render Playlist Detail View ───────────────────────────────────────────
+  if (selectedPlaylist) {
+    return (
+      <div className="library-page">
+        <div className="playlist-detail-header">
+          <button className="back-btn" onClick={() => setSelectedPlaylistId(null)}>
+            ← Back to Playlists
+          </button>
+          
+          <div className="playlist-banner">
+            <div className="playlist-large-art">
+              {selectedPlaylist.songs.slice(0, 4).map((s, i) => (
+                <img key={i} src={s.thumbnail} alt="" />
+              ))}
+              {selectedPlaylist.songs.length === 0 && <List size={32} />}
+            </div>
+            
+            <div className="playlist-banner-info">
+              <h2>{selectedPlaylist.name}</h2>
+              <p className="playlist-detail-meta">{selectedPlaylist.songs.length} songs</p>
+              
+              {selectedPlaylist.songs.length > 0 && (
+                <button 
+                  className="play-all-playlist-btn"
+                  onClick={() => player.playSong(selectedPlaylist.songs[0], selectedPlaylist.songs)}
+                >
+                  ▶ Play Playlist
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="playlist-songs-list">
+          {selectedPlaylist.songs.length === 0 ? (
+            <div className="empty-state">
+              <List size={48} strokeWidth={1} />
+              <p>This playlist is empty</p>
+              <span>Add songs using the "+" button on any track</span>
+            </div>
+          ) : (
+            <div className="playlist-songs-container">
+              {selectedPlaylist.songs.map((song, index) => {
+                const isCurrent = player.currentSong?.id === song.id;
+                
+                return (
+                  <div 
+                    key={`${song.id}-${index}`} 
+                    className={`playlist-song-row ${isCurrent ? 'active' : ''}`}
+                    draggable
+                    onDragStart={() => handleDragStart(index)}
+                    onDragOver={handleDragOver}
+                    onDrop={() => handleDrop(index)}
+                    onClick={() => player.playSong(song, selectedPlaylist.songs)}
+                  >
+                    {/* Reorder actions */}
+                    <div className="song-row-left" onClick={e => e.stopPropagation()}>
+                      <div className="song-reorder-arrows">
+                        <button 
+                          disabled={index === 0} 
+                          onClick={() => moveSong(index, 'up')}
+                          className="arrow-btn"
+                          title="Move up"
+                        >▲</button>
+                        <button 
+                          disabled={index === selectedPlaylist.songs.length - 1} 
+                          onClick={() => moveSong(index, 'down')}
+                          className="arrow-btn"
+                          title="Move down"
+                        >▼</button>
+                      </div>
+                      
+                      <div className="drag-handle-icon" title="Drag to reorder">
+                        <GripVertical size={16} color="var(--text-muted)" />
+                      </div>
+
+                      <img src={song.thumbnail} alt="" className="song-row-thumb" />
+                    </div>
+
+                    <div className="song-row-info">
+                      <p className={`song-row-title ${isCurrent ? 'playing-title' : ''}`}>{song.title}</p>
+                      <p className="song-row-artist">{song.artist}</p>
+                    </div>
+
+                    <div className="song-row-actions" onClick={e => e.stopPropagation()}>
+                      <button 
+                        className="remove-song-btn"
+                        onClick={() => onRemoveFromPlaylist(selectedPlaylist.id, song.id)}
+                        title="Remove from playlist"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Render General Library View ──────────────────────────────────────────
   return (
     <div className="library-page">
       <div className="library-header">
@@ -112,7 +270,6 @@ export function LibraryPage({ player, likedSongs, onToggleLike, playlists, onCre
                   className="play-all-offline-btn"
                   onClick={async () => {
                     const songs = downloads.map(d => d.song);
-                    // Build offline-aware songs and play
                     const first = downloads[0];
                     const url = await downloadService.getOfflineUrl(first.id);
                     if (url) {
@@ -238,7 +395,12 @@ export function LibraryPage({ player, likedSongs, onToggleLike, playlists, onCre
           ) : (
             <div className="playlists-grid">
               {playlists.map(pl => (
-                <div key={pl.id} className="playlist-card">
+                <div 
+                  key={pl.id} 
+                  className="playlist-card"
+                  onClick={() => setSelectedPlaylistId(pl.id)}
+                  style={{ cursor: 'pointer' }}
+                >
                   <div className="playlist-art">
                     {pl.songs.slice(0, 4).map((s, i) => (
                       <img key={i} src={s.thumbnail} alt="" />
@@ -247,7 +409,7 @@ export function LibraryPage({ player, likedSongs, onToggleLike, playlists, onCre
                   </div>
                   <p className="playlist-name">{pl.name}</p>
                   <p className="playlist-count">{pl.songs.length} songs</p>
-                  <div className="playlist-actions">
+                  <div className="playlist-actions" onClick={e => e.stopPropagation()}>
                     <button
                       className="play-playlist-btn"
                       onClick={() => pl.songs.length > 0 && player.playSong(pl.songs[0], pl.songs)}

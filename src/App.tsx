@@ -139,6 +139,31 @@ function App() {
     player.showToast('Added to playlist');
   }, [likedSongs, player, syncToCloud]);
 
+  const handleRemoveFromPlaylist = useCallback((playlistId: string, songId: string) => {
+    setPlaylists(prev => {
+      const updated = prev.map(p => {
+        if (p.id !== playlistId) return p;
+        return { ...p, songs: p.songs.filter(s => s.id !== songId) };
+      });
+      localStorage.setItem('soundwave_playlists', JSON.stringify(updated));
+      syncToCloud(likedSongs, player.history, updated);
+      return updated;
+    });
+    player.showToast('Removed from playlist');
+  }, [likedSongs, player, syncToCloud]);
+
+  const handleReorderPlaylist = useCallback((playlistId: string, songs: Song[]) => {
+    setPlaylists(prev => {
+      const updated = prev.map(p => {
+        if (p.id !== playlistId) return p;
+        return { ...p, songs };
+      });
+      localStorage.setItem('soundwave_playlists', JSON.stringify(updated));
+      syncToCloud(likedSongs, player.history, updated);
+      return updated;
+    });
+  }, [likedSongs, player, syncToCloud]);
+
   // ── Search navigation ──────────────────────────────────────────────────────
   const handleSearch = useCallback((q: string) => {
     setSearchQuery(q);
@@ -250,6 +275,8 @@ function App() {
             onCreatePlaylist={handleCreatePlaylist}
             onDeletePlaylist={handleDeletePlaylist}
             onAddToPlaylist={handleAddToPlaylist}
+            onRemoveFromPlaylist={handleRemoveFromPlaylist}
+            onReorderPlaylist={handleReorderPlaylist}
           />
         )}
 
