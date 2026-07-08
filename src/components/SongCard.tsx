@@ -1,6 +1,7 @@
 import { Plus, Heart, BarChart2 } from 'lucide-react';
 import type { Song } from '../services/pipedService';
 import { DownloadButton } from './DownloadButton';
+import { AddToPlaylistButton } from './AddToPlaylistButton';
 
 interface SongCardProps {
   song: Song;
@@ -55,6 +56,8 @@ export function SongCard({
       <div className="song-duration">{formatDuration(song.duration)}</div>
 
       <DownloadButton song={song} size={16} />
+
+      <AddToPlaylistButton song={song} size={18} />
 
       <button
         className="song-action-btn"

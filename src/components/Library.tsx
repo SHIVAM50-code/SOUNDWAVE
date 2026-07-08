@@ -38,9 +38,9 @@ export function Library({
   return (
     <div>
       {/* Quick Playlists Grid */}
-      <div className="playlist-grid">
-        <div className={`playlist-card`} onClick={() => setActiveTab('liked')} style={activeTab === 'liked' ? { border: '1px solid var(--primary)', background: 'rgba(139, 92, 246, 0.05)' } : {}}>
-          <div className="playlist-card-icon">
+      <div className="quick-lib-grid">
+        <div className="quick-lib-card" onClick={() => setActiveTab('liked')} style={activeTab === 'liked' ? { border: '1px solid var(--primary)', background: 'rgba(139, 92, 246, 0.05)' } : {}}>
+          <div className="quick-lib-card-icon">
             <Heart size={20} fill={activeTab === 'liked' ? 'var(--primary)' : 'none'} />
           </div>
           <div>
@@ -49,8 +49,8 @@ export function Library({
           </div>
         </div>
 
-        <div className={`playlist-card`} onClick={() => setActiveTab('history')} style={activeTab === 'history' ? { border: '1px solid var(--primary)', background: 'rgba(139, 92, 246, 0.05)' } : {}}>
-          <div className="playlist-card-icon" style={{ backgroundColor: 'rgba(99, 102, 241, 0.15)', color: 'var(--secondary)' }}>
+        <div className="quick-lib-card" onClick={() => setActiveTab('history')} style={activeTab === 'history' ? { border: '1px solid var(--primary)', background: 'rgba(139, 92, 246, 0.05)' } : {}}>
+          <div className="quick-lib-card-icon" style={{ backgroundColor: 'rgba(99, 102, 241, 0.15)', color: 'var(--secondary)' }}>
             <Clock size={20} />
           </div>
           <div>

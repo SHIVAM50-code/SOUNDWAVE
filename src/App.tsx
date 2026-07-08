@@ -10,6 +10,7 @@ import { SearchPage } from './pages/SearchPage';
 import { LibraryPage } from './pages/LibraryPage';
 import { AccountPage } from './pages/AccountPage';
 import { AudioPlayerControls } from './components/AudioPlayerControls';
+import { PlaylistContext } from './context/PlaylistContext';
 import './App.css';
 
 // Pre-warm Render backend (free tier sleeps after 15min of inactivity)
@@ -98,11 +99,11 @@ function App() {
   }, [player, playlists, syncToCloud]);
 
   // ── Playlists ──────────────────────────────────────────────────────────────
-  const handleCreatePlaylist = useCallback((name: string) => {
+  const handleCreatePlaylist = useCallback((name: string, initialSong?: Song) => {
     const newPl: Playlist = {
       id: `pl_${Date.now()}`,
       name,
-      songs: [],
+      songs: initialSong ? [initialSong] : [],
       createdAt: Date.now(),
     };
     setPlaylists(prev => {
@@ -111,7 +112,7 @@ function App() {
       syncToCloud(likedSongs, player.history, updated);
       return updated;
     });
-    player.showToast(`Playlist "${name}" created`);
+    player.showToast(initialSong ? `Added to new playlist "${name}"` : `Playlist "${name}" created`);
   }, [likedSongs, player, syncToCloud]);
 
   const handleDeletePlaylist = useCallback((id: string) => {
@@ -204,6 +205,9 @@ function App() {
   }
 
   return (
+    <PlaylistContext.Provider
+      value={{ playlists, addToPlaylist: handleAddToPlaylist, createPlaylist: handleCreatePlaylist }}
+    >
     <div className="app">
       {/* Top bar */}
       <header className="top-bar">
@@ -293,6 +297,7 @@ function App() {
         </div>
       )}
     </div>
+    </PlaylistContext.Provider>
   );
 }
 

@@ -7,6 +7,7 @@ import {
 import type { AudioPlayerHookType } from '../hooks/useAudioPlayer';
 import type { Song } from '../services/pipedService';
 import { LyricsPanel } from './LyricsPanel';
+import { AddToPlaylistButton } from './AddToPlaylistButton';
 
 interface Props {
   player: AudioPlayerHookType;
@@ -302,12 +303,15 @@ export function AudioPlayerControls({ player, likedSongs, onToggleLike }: Props)
                 <p className="fp-song-title">{currentSong.title}</p>
                 <p className="fp-song-artist">{currentSong.artist}</p>
               </div>
-              <button
-                className="fp-like-btn"
-                onClick={() => onToggleLike(currentSong)}
-              >
-                <Heart size={22} fill={isLiked ? '#ef4444' : 'none'} color={isLiked ? '#ef4444' : 'rgba(255,255,255,0.5)'} />
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <AddToPlaylistButton song={currentSong} size={20} className="fp-atp" />
+                <button
+                  className="fp-like-btn"
+                  onClick={() => onToggleLike(currentSong)}
+                >
+                  <Heart size={22} fill={isLiked ? '#ef4444' : 'none'} color={isLiked ? '#ef4444' : 'rgba(255,255,255,0.5)'} />
+                </button>
+              </div>
             </div>
 
             {/* Progress bar */}
