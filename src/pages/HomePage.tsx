@@ -1,4 +1,4 @@
-// src/pages/HomePage.tsx
+﻿// src/pages/HomePage.tsx
 import { useEffect, useState } from 'react';
 import { Flame, Clock, Heart, Music2, Radio, Mic2 } from 'lucide-react';
 import { pipedService } from '../services/pipedService';
@@ -13,44 +13,56 @@ interface Props {
   onSearch: (q: string) => void;
 }
 
-const TRENDING_QUERIES = [
-  { label: 'Top Global Hits 2025', query: 'top hits 2025', emoji: '🌍' },
-  { label: 'Viral Bollywood', query: 'bollywood viral 2025', emoji: '🎬' },
-  { label: 'Chill Vibes', query: 'chill lofi beats 2025', emoji: '🌙' },
-  { label: 'Hip-Hop Bangers', query: 'hip hop hits 2025', emoji: '🔥' },
-  { label: 'EDM Drop', query: 'edm electronic 2025', emoji: '⚡' },
-  { label: 'Classic Rock', query: 'classic rock hits', emoji: '🎸' },
-];
-
-const GENRE_CHIPS = [
-  { label: 'Pop', query: 'pop hits 2025' },
-  { label: 'Bollywood', query: 'new bollywood songs 2025' },
-  { label: 'Hip-Hop', query: 'hip hop rap 2025' },
-  { label: 'EDM', query: 'edm dance 2025' },
-  { label: 'Rock', query: 'rock songs 2025' },
-  { label: 'Classical', query: 'classical music best' },
-  { label: 'Jazz', query: 'jazz instrumental' },
-  { label: 'R&B', query: 'rnb soul 2025' },
-  { label: 'Devotional', query: 'bhajan devotional songs' },
-  { label: 'Lo-fi', query: 'lofi hip hop study' },
-  { label: 'Punjabi', query: 'punjabi hits 2025' },
-  { label: 'Podcast', query: 'popular podcast 2025' },
-];
-
 export function HomePage({ player, likedSongs, onToggleLike, onSearch }: Props) {
   const [trendingSongs, setTrendingSongs] = useState<Song[]>([]);
   const [loadingTrending, setLoadingTrending] = useState(true);
+  const [greeting, setGreeting] = useState('');
+  
+  const currentYear = new Date().getFullYear();
 
-  const hour = new Date().getHours();
-  const greeting = hour < 12 ? 'Good Morning' : hour < 17 ? 'Good Afternoon' : 'Good Evening';
+  const TRENDING_QUERIES = [
+    { label: `Top Global Hits ${currentYear}`, query: `top hits ${currentYear}`, emoji: '🌎' },
+    { label: 'Viral Bollywood', query: `bollywood viral ${currentYear}`, emoji: '🎬' },
+    { label: 'Chill Vibes', query: `chill lofi beats ${currentYear}`, emoji: '🌙' },
+    { label: 'Hip-Hop Bangers', query: `hip hop hits ${currentYear}`, emoji: '🔥' },
+    { label: 'EDM Drop', query: `edm electronic ${currentYear}`, emoji: '⚡' },
+    { label: 'Classic Rock', query: 'classic rock hits', emoji: '🎸' },
+  ];
+
+  const GENRE_CHIPS = [
+    { label: 'Pop', query: `pop hits ${currentYear}` },
+    { label: 'Bollywood', query: `new bollywood songs ${currentYear}` },
+    { label: 'Hip-Hop', query: `hip hop rap ${currentYear}` },
+    { label: 'EDM', query: `edm dance ${currentYear}` },
+    { label: 'Rock', query: `rock songs ${currentYear}` },
+    { label: 'Classical', query: 'classical music best' },
+    { label: 'Jazz', query: 'jazz instrumental' },
+    { label: 'R&B', query: `rnb soul ${currentYear}` },
+    { label: 'Devotional', query: 'bhajan devotional songs' },
+    { label: 'Lo-fi', query: 'lofi hip hop study' },
+    { label: 'Punjabi', query: `punjabi hits ${currentYear}` },
+    { label: 'Podcast', query: `popular podcast ${currentYear}` },
+  ];
+
+  // Dynamic greeting logic that updates in real-time
+  useEffect(() => {
+    const updateGreeting = () => {
+      const currentHour = new Date().getHours();
+      const greet = currentHour < 12 ? 'Good Morning' : currentHour < 17 ? 'Good Afternoon' : 'Good Evening';
+      setGreeting(greet);
+    };
+    updateGreeting();
+    const interval = setInterval(updateGreeting, 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     setLoadingTrending(true);
-    pipedService.searchSongs('top global hits playlist 2025')
+    pipedService.searchSongs(`top global hits playlist ${currentYear}`)
       .then(songs => setTrendingSongs(songs.slice(0, 10)))
       .catch(() => {})
       .finally(() => setLoadingTrending(false));
-  }, []);
+  }, [currentYear]);
 
   const recentHistory = player.history.slice(0, 10);
 

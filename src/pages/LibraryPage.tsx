@@ -1,4 +1,4 @@
-// src/pages/LibraryPage.tsx
+﻿// src/pages/LibraryPage.tsx
 import { useState, useEffect } from 'react';
 import { Heart, Clock, Download, Trash2, Wifi, WifiOff, List, Plus, X, GripVertical } from 'lucide-react';
 import { downloadService, type DownloadedSong } from '../services/downloadService';
@@ -7,7 +7,7 @@ import { SongCard } from '../components/SongCard';
 import type { AudioPlayerHookType } from '../hooks/useAudioPlayer';
 import type { Playlist } from '../services/firestoreService';
 
-type LibTab = 'liked' | 'downloads' | 'history' | 'playlists';
+type LibTab = 'playlists' | 'liked' | 'downloads' | 'history';
 
 interface Props {
   player: AudioPlayerHookType;
@@ -31,7 +31,7 @@ export function LibraryPage({
   onRemoveFromPlaylist,
   onReorderPlaylist 
 }: Props) {
-  const [activeTab, setActiveTab] = useState<LibTab>('liked');
+  const [activeTab, setActiveTab] = useState<LibTab>('playlists');
   const [downloads, setDownloads] = useState<DownloadedSong[]>([]);
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [showNewPlaylist, setShowNewPlaylist] = useState(false);
@@ -91,10 +91,10 @@ export function LibraryPage({
   const selectedPlaylist = playlists.find(p => p.id === selectedPlaylistId);
 
   const tabs: { id: LibTab; label: string; icon: React.ReactNode; count?: number }[] = [
+    { id: 'playlists', label: 'Playlists', icon: <List size={15} />,      count: playlists.length },
     { id: 'liked',     label: 'Liked',     icon: <Heart size={15} />,     count: likedSongs.length },
     { id: 'downloads', label: 'Downloads', icon: <Download size={15} />,  count: downloads.length },
     { id: 'history',   label: 'History',   icon: <Clock size={15} />,     count: player.history.length },
-    { id: 'playlists', label: 'Playlists', icon: <List size={15} />,      count: playlists.length },
   ];
 
   // ── Render Playlist Detail View ───────────────────────────────────────────
@@ -224,6 +224,88 @@ export function LibraryPage({
         ))}
       </div>
 
+      {/* Playlists */}
+      {activeTab === 'playlists' && (
+        <div className="lib-content">
+          <div className="playlist-header-row">
+            <button className="create-playlist-btn" onClick={() => setShowNewPlaylist(true)}>
+              <Plus size={16} /> New Playlist
+            </button>
+          </div>
+
+          {showNewPlaylist && (
+            <div className="new-playlist-form">
+              <input
+                className="playlist-name-input"
+                placeholder="Playlist name..."
+                value={newPlaylistName}
+                onChange={e => setNewPlaylistName(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && newPlaylistName.trim()) {
+                    onCreatePlaylist(newPlaylistName.trim());
+                    setNewPlaylistName('');
+                    setShowNewPlaylist(false);
+                  }
+                }}
+                autoFocus
+              />
+              <button
+                className="confirm-btn"
+                onClick={() => {
+                  if (newPlaylistName.trim()) {
+                    onCreatePlaylist(newPlaylistName.trim());
+                    setNewPlaylistName('');
+                    setShowNewPlaylist(false);
+                  }
+                }}
+              >Create</button>
+              <button className="cancel-btn" onClick={() => setShowNewPlaylist(false)}>
+                <X size={14} />
+              </button>
+            </div>
+          )}
+
+          {playlists.length === 0 ? (
+            <div className="empty-state">
+              <List size={48} strokeWidth={1} />
+              <p>No playlists yet</p>
+              <span>Create a playlist to organize your music</span>
+            </div>
+          ) : (
+            <div className="playlists-grid">
+              {playlists.map(pl => (
+                <div 
+                  key={pl.id} 
+                  className="playlist-card"
+                  onClick={() => setSelectedPlaylistId(pl.id)}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <div className="playlist-art">
+                    {pl.songs.slice(0, 4).map((s, i) => (
+                      <img key={i} src={s.thumbnail} alt="" />
+                    ))}
+                    {pl.songs.length === 0 && <List size={18} />}
+                  </div>
+                  <div className="playlist-info-col">
+                    <p className="playlist-name">{pl.name}</p>
+                    <p className="playlist-count">{pl.songs.length} songs</p>
+                  </div>
+                  <div className="playlist-actions" onClick={e => e.stopPropagation()}>
+                    <button
+                      className="play-playlist-btn"
+                      onClick={() => pl.songs.length > 0 && player.playSong(pl.songs[0], pl.songs)}
+                    >Play</button>
+                    <button className="delete-playlist-btn" onClick={() => onDeletePlaylist(pl.id)}>
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Liked Songs */}
       {activeTab === 'liked' && (
         <div className="lib-content">
@@ -339,86 +421,6 @@ export function LibraryPage({
                   onAddToQueue={() => player.addToQueue(song)}
                   onToggleLike={() => onToggleLike(song)}
                 />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Playlists */}
-      {activeTab === 'playlists' && (
-        <div className="lib-content">
-          <div className="playlist-header-row">
-            <button className="create-playlist-btn" onClick={() => setShowNewPlaylist(true)}>
-              <Plus size={16} /> New Playlist
-            </button>
-          </div>
-
-          {showNewPlaylist && (
-            <div className="new-playlist-form">
-              <input
-                className="playlist-name-input"
-                placeholder="Playlist name..."
-                value={newPlaylistName}
-                onChange={e => setNewPlaylistName(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && newPlaylistName.trim()) {
-                    onCreatePlaylist(newPlaylistName.trim());
-                    setNewPlaylistName('');
-                    setShowNewPlaylist(false);
-                  }
-                }}
-                autoFocus
-              />
-              <button
-                className="confirm-btn"
-                onClick={() => {
-                  if (newPlaylistName.trim()) {
-                    onCreatePlaylist(newPlaylistName.trim());
-                    setNewPlaylistName('');
-                    setShowNewPlaylist(false);
-                  }
-                }}
-              >Create</button>
-              <button className="cancel-btn" onClick={() => setShowNewPlaylist(false)}>
-                <X size={14} />
-              </button>
-            </div>
-          )}
-
-          {playlists.length === 0 ? (
-            <div className="empty-state">
-              <List size={48} strokeWidth={1} />
-              <p>No playlists yet</p>
-              <span>Create a playlist to organize your music</span>
-            </div>
-          ) : (
-            <div className="playlists-grid">
-              {playlists.map(pl => (
-                <div 
-                  key={pl.id} 
-                  className="playlist-card"
-                  onClick={() => setSelectedPlaylistId(pl.id)}
-                  style={{ cursor: 'pointer' }}
-                >
-                  <div className="playlist-art">
-                    {pl.songs.slice(0, 4).map((s, i) => (
-                      <img key={i} src={s.thumbnail} alt="" />
-                    ))}
-                    {pl.songs.length === 0 && <List size={32} />}
-                  </div>
-                  <p className="playlist-name">{pl.name}</p>
-                  <p className="playlist-count">{pl.songs.length} songs</p>
-                  <div className="playlist-actions" onClick={e => e.stopPropagation()}>
-                    <button
-                      className="play-playlist-btn"
-                      onClick={() => pl.songs.length > 0 && player.playSong(pl.songs[0], pl.songs)}
-                    >Play</button>
-                    <button className="delete-playlist-btn" onClick={() => onDeletePlaylist(pl.id)}>
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
-                </div>
               ))}
             </div>
           )}

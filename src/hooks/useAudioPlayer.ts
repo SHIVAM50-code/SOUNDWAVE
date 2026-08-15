@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+﻿import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Song } from '../services/pipedService';
 import { downloadService } from '../services/downloadService';
-import { youtubePlayer } from '../services/youtubePlayer';
+import { getStreamUrl } from '../services/streamService';
 
 export type LoopMode = 'none' | 'all' | 'one';
 
@@ -27,9 +27,11 @@ export function useAudioPlayer() {
   const isShuffleRef        = useRef(false);
   const playSongRef         = useRef<((song: Song, newQueue?: Song[]) => void) | null>(null);
   const nextTrackRef        = useRef<(() => void) | null>(null);
-  const isOfflineRef        = useRef(false);
+  
+  // Track state transitions to ignore artificial resets
+  const isChangingTrackRef  = useRef(false);
 
-  // Sync state → refs
+  // Sync state -> refs
   useEffect(() => { currentSongRef.current = currentSong; }, [currentSong]);
   useEffect(() => { queueRef.current = queue; }, [queue]);
   useEffect(() => { loopModeRef.current = loopMode; }, [loopMode]);
@@ -40,7 +42,7 @@ export function useAudioPlayer() {
     setTimeout(() => setToastMessage(null), 3000);
   }, []);
 
-  // ── Update Media Session ──────────────────────────────────────────────────
+  // Update Media Session
   const updateMediaSession = useCallback((song: Song) => {
     if (!('mediaSession' in navigator)) return;
     navigator.mediaSession.metadata = new MediaMetadata({
@@ -56,7 +58,7 @@ export function useAudioPlayer() {
     navigator.mediaSession.playbackState = 'playing';
   }, []);
 
-  // ── Initialize HTML5 Audio (For Offline Playback) ──────────────────────────
+  // Initialize HTML5 Audio (For Unified Playback)
   useEffect(() => {
     const audio = new Audio();
     audio.preload = 'auto';
@@ -67,39 +69,40 @@ export function useAudioPlayer() {
     const savedVol = localStorage.getItem('soundwave_volume');
     const savedVolNum = savedVol ? parseFloat(savedVol) : 1;
     audio.volume = savedVolNum;
+    setVolumeState(savedVolNum);
 
     audio.onplay = () => {
-      if (!isOfflineRef.current) return;
+      if (isChangingTrackRef.current) return;
       setIsPlaying(true);
       setIsLoading(false);
       if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
     };
     audio.onpause = () => {
-      if (!isOfflineRef.current) return;
+      if (isChangingTrackRef.current) return;
       setIsPlaying(false);
       if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
     };
     audio.onwaiting = () => {
-      if (!isOfflineRef.current) return;
+      if (isChangingTrackRef.current) return;
       setIsLoading(true);
     };
     audio.onplaying = () => {
-      if (!isOfflineRef.current) return;
+      if (isChangingTrackRef.current) return;
       setIsLoading(false);
       setIsPlaying(true);
     };
     audio.ontimeupdate = () => {
-      if (!isOfflineRef.current) return;
+      if (isChangingTrackRef.current) return;
       setCurrentTime(audio.currentTime);
     };
     audio.ondurationchange = () => {
-      if (!isOfflineRef.current) return;
+      if (isChangingTrackRef.current) return;
       if (audio.duration && !isNaN(audio.duration)) {
         setDuration(audio.duration);
       }
     };
     audio.onended = () => {
-      if (!isOfflineRef.current) return;
+      if (isChangingTrackRef.current) return;
       setIsPlaying(false);
       if (loopModeRef.current === 'one') {
         audio.currentTime = 0;
@@ -109,13 +112,31 @@ export function useAudioPlayer() {
       }
     };
     audio.onerror = (e) => {
-      if (!isOfflineRef.current) return;
-      console.error('[audio] Offline playback error:', e);
+      if (isChangingTrackRef.current) return;
+      console.error('[audio] Playback error:', e);
       setIsLoading(false);
       setIsPlaying(false);
-      showToast('Playback error — skipping...');
+      showToast('Playback error - skipping...');
       setTimeout(() => nextTrackRef.current?.(), 1500);
     };
+
+    // Media Session action handlers (for background lockscreen controls)
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.setActionHandler('play',  () => {
+        audio.play().catch(console.error);
+      });
+      navigator.mediaSession.setActionHandler('pause', () => {
+        audio.pause();
+      });
+      navigator.mediaSession.setActionHandler('nexttrack',     () => nextTrackRef.current?.());
+      navigator.mediaSession.setActionHandler('previoustrack', () => prevTrackRef.current?.());
+      navigator.mediaSession.setActionHandler('seekto', (d) => {
+        if (d.seekTime !== undefined) {
+          audio.currentTime = d.seekTime;
+          setCurrentTime(d.seekTime);
+        }
+      });
+    }
 
     return () => {
       audio.pause();
@@ -124,99 +145,7 @@ export function useAudioPlayer() {
     };
   }, [showToast]);
 
-  // ── Initialize YouTube Player Callbacks ──────────────────────────────────────
-  useEffect(() => {
-    // Volume initialization
-    const savedVol = localStorage.getItem('soundwave_volume');
-    const savedVolNum = savedVol ? parseFloat(savedVol) : 1;
-    setVolumeState(savedVolNum);
-    youtubePlayer.setVolume(savedVolNum);
-
-    // Register callbacks to sync YouTube Player state with React state
-    youtubePlayer.onStateChange((state) => {
-      if (isOfflineRef.current) return; // Ignore YouTube events if playing offline
-
-      // YT.PlayerState: -1 (unstarted), 0 (ended), 1 (playing), 2 (paused), 3 (buffering), 5 (cued)
-      if (state === 1) { // Playing
-        setIsPlaying(true);
-        setIsLoading(false);
-        if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
-        
-        // Sync duration once details load
-        const d = youtubePlayer.getDuration();
-        if (d && !isNaN(d)) setDuration(d);
-      } else if (state === 2) { // Paused
-        setIsPlaying(false);
-        if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
-      } else if (state === 3) { // Buffering / Loading
-        setIsLoading(true);
-      } else if (state === -1 || state === 5) {
-        setIsLoading(false);
-      }
-    });
-
-    youtubePlayer.onTimeUpdate((time) => {
-      if (isOfflineRef.current) return;
-
-      setCurrentTime(time);
-      
-      const d = youtubePlayer.getDuration();
-      if (d && d > 0 && !isNaN(d)) setDuration(d);
-    });
-
-    youtubePlayer.onEnded(() => {
-      if (isOfflineRef.current) return;
-
-      setIsPlaying(false);
-      if (loopModeRef.current === 'one') {
-        const curSong = currentSongRef.current;
-        if (curSong) {
-          youtubePlayer.loadAndPlay(curSong.id);
-        }
-      } else {
-        nextTrackRef.current?.();
-      }
-    });
-
-    // Media Session action handlers (for background lockscreen controls)
-    if ('mediaSession' in navigator) {
-      navigator.mediaSession.setActionHandler('play',  () => {
-        const audio = audioRef.current;
-        if (isOfflineRef.current) {
-          if (audio) audio.play().catch(console.error);
-        } else {
-          youtubePlayer.play();
-        }
-      });
-      navigator.mediaSession.setActionHandler('pause', () => {
-        const audio = audioRef.current;
-        if (isOfflineRef.current) {
-          if (audio) audio.pause();
-        } else {
-          youtubePlayer.pause();
-        }
-      });
-      navigator.mediaSession.setActionHandler('nexttrack',     () => nextTrackRef.current?.());
-      navigator.mediaSession.setActionHandler('previoustrack', () => prevTrackRef.current?.());
-      navigator.mediaSession.setActionHandler('seekto', (d) => {
-        if (d.seekTime !== undefined) {
-          const audio = audioRef.current;
-          if (isOfflineRef.current) {
-            if (audio) audio.currentTime = d.seekTime;
-          } else {
-            youtubePlayer.seekTo(d.seekTime);
-          }
-          setCurrentTime(d.seekTime);
-        }
-      });
-    }
-
-    return () => {
-      youtubePlayer.pause();
-    };
-  }, []);
-
-  // ── Track navigation ──────────────────────────────────────────────────────
+  // Track navigation
   const nextTrack = useCallback(() => {
     const q = queueRef.current;
     if (q.length === 0) return;
@@ -240,15 +169,12 @@ export function useAudioPlayer() {
     // Check if we should restart the current song
     let curTime = 0;
     const audio = audioRef.current;
-    if (isOfflineRef.current) {
-      curTime = audio ? audio.currentTime : 0;
-    } else {
-      curTime = youtubePlayer.getCurrentTime();
+    if (audio) {
+      curTime = audio.currentTime;
     }
 
     if (curTime > 3) {
-      if (isOfflineRef.current && audio) audio.currentTime = 0;
-      else youtubePlayer.seekTo(0);
+      if (audio) audio.currentTime = 0;
       setCurrentTime(0);
       return;
     }
@@ -262,7 +188,7 @@ export function useAudioPlayer() {
   const prevTrackRef = useRef(prevTrack);
   useEffect(() => { prevTrackRef.current = prevTrack; }, [prevTrack]);
 
-  // ── Main playSong ─────────────────────────────────────────────────────────
+  // Main playSong
   const playSong = useCallback(async (song: Song, newQueue: Song[] = []) => {
     setCurrentSong(song);
     setIsLoading(true);
@@ -303,62 +229,64 @@ export function useAudioPlayer() {
     } catch (_) {}
 
     const audio = audioRef.current;
+    if (!audio) return;
+
+    // Transition track source safely
+    isChangingTrackRef.current = true;
+    audio.pause();
+    audio.src = '';
 
     if (blobUrl) {
       console.log('[player] Playing from local IndexedDB:', song.title);
-      isOfflineRef.current = true;
-      // Pause YouTube Player
-      youtubePlayer.pause();
-      
-      // Load and play native audio
-      if (audio) {
-        audio.src = blobUrl;
-        audio.play().catch((e) => {
-          console.error('[player] Offline play failed:', e);
-          setIsLoading(false);
-        });
-      }
+      audio.src = blobUrl;
+      isChangingTrackRef.current = false;
+      audio.play().catch((e) => {
+        console.error('[player] Offline play failed:', e);
+        setIsLoading(false);
+      });
     } else {
-      console.log('[player] Playing client-side via YouTube IFrame:', song.title);
-      isOfflineRef.current = false;
-      // Clear offline audio src
-      if (audio) {
-        audio.pause();
-        audio.src = '';
+      console.log('[player] Resolving online stream URL client-side for:', song.title);
+      try {
+        const stream = await getStreamUrl(song.id);
+        if (stream && stream.url) {
+          console.log('[player] Direct stream resolved:', stream.source);
+          audio.src = stream.url;
+          isChangingTrackRef.current = false;
+          audio.play().catch((e) => {
+            console.error('[player] Direct play failed:', e);
+            setIsLoading(false);
+            showToast('Playback failed - skipping track...');
+            setTimeout(() => nextTrackRef.current?.(), 1500);
+          });
+        } else {
+          throw new Error('No stream URL resolved');
+        }
+      } catch (err: any) {
+        console.error('[player] Online resolution failed:', err.message);
+        isChangingTrackRef.current = false;
+        setIsLoading(false);
+        showToast('Playback failed - skipping track...');
+        setTimeout(() => nextTrackRef.current?.(), 1500);
       }
-      youtubePlayer.loadAndPlay(song.id);
     }
-  }, [updateMediaSession]);
+  }, [updateMediaSession, showToast]);
 
   playSongRef.current = playSong;
 
-  // ── Controls ──────────────────────────────────────────────────────────────
+  // Controls
   const togglePlay = useCallback(() => {
-    if (!currentSongRef.current) return;
+    if (!currentSongRef.current || !audioRef.current) return;
     const audio = audioRef.current;
-    if (isOfflineRef.current) { // Offline Mode
-      if (audio) {
-        audio.paused ? audio.play().catch(console.error) : audio.pause();
-      }
-    } else { // Online Mode
-      if (isPlaying) {
-        youtubePlayer.pause();
-      } else {
-        youtubePlayer.play();
-      }
-    }
-  }, [isPlaying]);
+    audio.paused ? audio.play().catch(console.error) : audio.pause();
+  }, []);
 
   const togglePlayRef = useRef(togglePlay);
   useEffect(() => { togglePlayRef.current = togglePlay; }, [togglePlay]);
 
   const seekTo = useCallback((time: number) => {
     setCurrentTime(time);
-    const audio = audioRef.current;
-    if (isOfflineRef.current) {
-      if (audio) audio.currentTime = time;
-    } else {
-      youtubePlayer.seekTo(time);
+    if (audioRef.current) {
+      audioRef.current.currentTime = time;
     }
   }, []);
 
@@ -369,7 +297,6 @@ export function useAudioPlayer() {
     setVolumeState(vol);
     localStorage.setItem('soundwave_volume', vol.toString());
     if (audioRef.current) audioRef.current.volume = vol;
-    youtubePlayer.setVolume(vol);
   }, []);
 
   const toggleLoop = useCallback(() => {
