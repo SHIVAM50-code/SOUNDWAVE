@@ -406,14 +406,17 @@ app.get('/api/proxy-stream', async (req, res) => {
 
       const protocol = targetUrl.startsWith('https') ? https : http;
       const proxyReq = protocol.request(options, (proxyRes) => {
-        res.status(proxyRes.statusCode);
-        if (proxyRes.headers['content-type']) res.setHeader('Content-Type', proxyRes.headers['content-type']);
-        if (proxyRes.headers['content-length']) res.setHeader('Content-Length', proxyRes.headers['content-length']);
-        if (proxyRes.headers['content-range']) res.setHeader('Content-Range', proxyRes.headers['content-range']);
-        if (proxyRes.headers['accept-ranges']) res.setHeader('Accept-Ranges', proxyRes.headers['accept-ranges']);
-
-        proxyRes.pipe(res);
-      });
+          res.status(proxyRes.statusCode);
+          let contentType = proxyRes.headers['content-type'];
+          if (!contentType || contentType.includes('application/octet-stream') || contentType.includes('application/x-mpegurl')) {
+            contentType = 'audio/mpeg';
+          }
+          res.setHeader('Content-Type', contentType);
+          if (proxyRes.headers['content-length']) res.setHeader('Content-Length', proxyRes.headers['content-length']);
+          if (proxyRes.headers['content-range']) res.setHeader('Content-Range', proxyRes.headers['content-range']);
+          res.setHeader('Accept-Ranges', 'bytes');
+          proxyRes.pipe(res);
+        });
 
       proxyReq.on('error', (err) => {
         console.warn(`[proxy-stream] Direct URL request error: ${err.message}`);

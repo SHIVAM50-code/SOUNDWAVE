@@ -1,5 +1,9 @@
 ﻿// src/services/streamService.ts
-// Resolves stream URLs using Piped client-side APIs, proxied through our backend for CORS-bypassing range support.
+// Resolves stream URLs client-side using public Cobalt API instances (with CORS-enabled direct audio tunnels)
+// Primary: Cobalt (api.kittycat.boo) -> plays direct mp3 audio
+// Secondary: Piped browser-direct
+// Fallback: Server-side proxy
+
 import { API_BASE_URL } from './apiConfig';
 
 export interface StreamResult {
@@ -8,12 +12,52 @@ export interface StreamResult {
   source: string;
 }
 
+const COBALT_INSTANCES = [
+  'https://cobaltapi.kittycat.boo/'
+];
+
 const PIPED_INSTANCES = [
   'https://api.piped.private.coffee',
   'https://pipedapi.kavin.rocks',
-  'https://pipedapi.privacydev.net',
-  'https://piped-api.lunar.icu'
+  'https://pipedapi.privacydev.net'
 ];
+
+async function tryCobaltBrowser(videoId: string): Promise<string | null> {
+  const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  
+  for (const base of COBALT_INSTANCES) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 6000);
+      
+      const resp = await fetch(base, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          url: youtubeUrl,
+          downloadMode: 'audio',
+          audioFormat: 'mp3'
+        }),
+        signal: controller.signal
+      });
+      
+      clearTimeout(timer);
+      if (!resp.ok) continue;
+      
+      const json = await resp.json();
+      if (json.status === 'tunnel' && json.url) {
+        console.log(`[stream] Resolved audio stream client-side via Cobalt: ${base}`);
+        return json.url;
+      }
+    } catch (e: any) {
+      console.log(`[stream] Cobalt ${base} failed: ${e?.message?.substring?.(0, 50)}`);
+    }
+  }
+  return null;
+}
 
 async function tryPipedBrowser(videoId: string): Promise<string | null> {
   for (const base of PIPED_INSTANCES) {
@@ -27,7 +71,6 @@ async function tryPipedBrowser(videoId: string): Promise<string | null> {
       const data = await resp.json();
       if (data?.error) continue;
 
-      // Strategy 1: Pure audio streams
       const audioStreams: any[] = data.audioStreams || [];
       if (audioStreams.length > 0) {
         const chosen = audioStreams.find((s: any) => s.mimeType?.includes('audio/mp4'))
@@ -39,7 +82,6 @@ async function tryPipedBrowser(videoId: string): Promise<string | null> {
         }
       }
 
-      // Strategy 2: Video streams with audio (videoOnly=false)
       const videoStreams: any[] = data.videoStreams || [];
       const withAudio = videoStreams.filter((s: any) => !s.videoOnly);
       if (withAudio.length > 0) {
@@ -60,23 +102,39 @@ async function tryPipedBrowser(videoId: string): Promise<string | null> {
 export async function getStreamUrl(videoId: string): Promise<StreamResult | null> {
   console.log(`[stream] Resolving stream URL for: ${videoId}`);
 
-  // 1. Try to resolve client-side using Piped (residential/mobile IP)
+  // 1. Try Cobalt (kittycat.boo) first - extremely fast, routed through our backend proxy to enforce correct headers
   try {
-    const directUrl = await tryPipedBrowser(videoId);
-    if (directUrl) {
-      const proxiedUrl = `${API_BASE_URL}/api/proxy-stream?url=${encodeURIComponent(directUrl)}`;
-      console.log('[stream] ✅ Using client-resolved stream routed through backend proxy');
+    const cobaltUrl = await tryCobaltBrowser(videoId);
+    if (cobaltUrl) {
+      const proxiedUrl = `${API_BASE_URL}/api/proxy-stream?url=${encodeURIComponent(cobaltUrl)}`;
+      console.log('[stream] ✅ Using Cobalt client-resolved audio stream routed through backend proxy');
       return {
         url: proxiedUrl,
-        type: 'audio/mp4',
-        source: 'client-resolved-proxied'
+        type: 'audio/mp3',
+        source: 'cobalt-client-resolved-proxied'
       };
     }
   } catch (e) {
-    console.warn('[stream] Client-side resolution error:', e);
+    console.warn('[stream] Cobalt resolution error:', e);
   }
 
-  // 2. Fallback to server-side resolution
+  // 2. Try Piped second
+  try {
+    const pipedUrl = await tryPipedBrowser(videoId);
+    if (pipedUrl) {
+      const proxiedUrl = `${API_BASE_URL}/api/proxy-stream?url=${encodeURIComponent(pipedUrl)}`;
+      console.log('[stream] ✅ Using Piped client-resolved stream routed through backend proxy');
+      return {
+        url: proxiedUrl,
+        type: 'audio/mp4',
+        source: 'piped-client-resolved-proxied'
+      };
+    }
+  } catch (e) {
+    console.warn('[stream] Piped resolution error:', e);
+  }
+
+  // 3. Fallback to server-side resolution
   console.log('[stream] Fallback: Using backend server-side proxy stream');
   return {
     url: `${API_BASE_URL}/api/proxy-stream?id=${videoId}`,
