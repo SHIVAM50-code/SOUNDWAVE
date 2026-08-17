@@ -1,6 +1,6 @@
 ﻿// src/pages/LibraryPage.tsx
 import { useState, useEffect } from 'react';
-import { Heart, Clock, Download, Trash2, Wifi, WifiOff, List, Plus, X, GripVertical } from 'lucide-react';
+import { Heart, Clock, Download, Trash2, Wifi, WifiOff, List, Plus, X, GripVertical, ChevronLeft } from 'lucide-react';
 import { downloadService, type DownloadedSong } from '../services/downloadService';
 import type { Song } from '../services/pipedService';
 import { SongCard } from '../components/SongCard';
@@ -102,8 +102,8 @@ export function LibraryPage({
     return (
       <div className="library-page">
         <div className="playlist-detail-header">
-          <button className="back-btn" onClick={() => setSelectedPlaylistId(null)}>
-            ← Back to Playlists
+          <button className="back-btn" onClick={() => setSelectedPlaylistId(null)} title="Back to Playlists">
+            <ChevronLeft size={24} />
           </button>
           
           <div className="playlist-banner">

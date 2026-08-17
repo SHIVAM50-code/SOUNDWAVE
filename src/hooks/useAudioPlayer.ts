@@ -27,8 +27,6 @@ export function useAudioPlayer() {
   const isShuffleRef        = useRef(false);
   const playSongRef         = useRef<((song: Song, newQueue?: Song[]) => void) | null>(null);
   const nextTrackRef        = useRef<(() => void) | null>(null);
-  
-  // Track state transitions to ignore artificial resets
   const isChangingTrackRef  = useRef(false);
 
   // Sync state -> refs
@@ -42,7 +40,7 @@ export function useAudioPlayer() {
     setTimeout(() => setToastMessage(null), 3000);
   }, []);
 
-  // Update Media Session
+  // Update Media Session (controls background / lockscreen metadata)
   const updateMediaSession = useCallback((song: Song) => {
     if (!('mediaSession' in navigator)) return;
     navigator.mediaSession.metadata = new MediaMetadata({
@@ -62,6 +60,7 @@ export function useAudioPlayer() {
   useEffect(() => {
     const audio = new Audio();
     audio.preload = 'auto';
+    audio.crossOrigin = 'anonymous';
     audio.id = 'soundwave-audio';
     audioRef.current = audio;
     (window as any)._audioPlayer = audio;
@@ -111,13 +110,16 @@ export function useAudioPlayer() {
         nextTrackRef.current?.();
       }
     };
-    audio.onerror = (e) => {
+    audio.onerror = () => {
       if (isChangingTrackRef.current) return;
-      console.error('[audio] Playback error:', e);
-      setIsLoading(false);
-      setIsPlaying(false);
-      showToast('Playback error - skipping...');
-      setTimeout(() => nextTrackRef.current?.(), 1500);
+      // Only fire for real errors
+      if (audio.src && audio.src !== '' && audio.src !== window.location.href) {
+        console.error('[audio] Playback error on source:', audio.src.substring(0, 80));
+        setIsLoading(false);
+        setIsPlaying(false);
+        showToast('Playback error - skipping...');
+        setTimeout(() => nextTrackRef.current?.(), 2000);
+      }
     };
 
     // Media Session action handlers (for background lockscreen controls)
@@ -140,6 +142,7 @@ export function useAudioPlayer() {
 
     return () => {
       audio.pause();
+      audio.src = '';
       audioRef.current = null;
       (window as any)._audioPlayer = null;
     };
@@ -234,10 +237,12 @@ export function useAudioPlayer() {
     // Transition track source safely
     isChangingTrackRef.current = true;
     audio.pause();
-    audio.src = '';
+    audio.removeAttribute('src');
+    audio.load(); // Reset player state
 
     if (blobUrl) {
       console.log('[player] Playing from local IndexedDB:', song.title);
+      audio.crossOrigin = null as any;
       audio.src = blobUrl;
       isChangingTrackRef.current = false;
       audio.play().catch((e) => {
@@ -249,14 +254,48 @@ export function useAudioPlayer() {
       try {
         const stream = await getStreamUrl(song.id);
         if (stream && stream.url) {
-          console.log('[player] Direct stream resolved:', stream.source);
+          console.log('[player] Stream URL resolved:', stream.source, stream.url.substring(0, 100));
+          audio.crossOrigin = 'anonymous';
           audio.src = stream.url;
           isChangingTrackRef.current = false;
-          audio.play().catch((e) => {
-            console.error('[player] Direct play failed:', e);
-            setIsLoading(false);
-            showToast('Playback failed - skipping track...');
-            setTimeout(() => nextTrackRef.current?.(), 1500);
+
+          // Wait for canplay event
+          await new Promise<void>((resolve) => {
+            const onCanPlay = () => {
+              audio.removeEventListener('canplay', onCanPlay);
+              audio.removeEventListener('error', onError);
+              clearTimeout(timeout);
+              resolve();
+            };
+            const onError = () => {
+              audio.removeEventListener('canplay', onCanPlay);
+              audio.removeEventListener('error', onError);
+              clearTimeout(timeout);
+              resolve(); // fallback play anyway
+            };
+            const timeout = setTimeout(() => {
+              audio.removeEventListener('canplay', onCanPlay);
+              audio.removeEventListener('error', onError);
+              resolve();
+            }, 8000);
+
+            audio.addEventListener('canplay', onCanPlay);
+            audio.addEventListener('error', onError);
+          });
+
+          audio.play().catch(async (e) => {
+            console.error('[player] Play failed, retrying without crossOrigin:', e);
+            // Fallback: Retry playing without anonymous crossOrigin header (some CDNs require this)
+            audio.crossOrigin = null as any;
+            audio.src = stream.url;
+            try {
+              await audio.play();
+            } catch (err) {
+              console.error('[player] Retry play failed:', err);
+              setIsLoading(false);
+              showToast('Playback failed - skipping track...');
+              setTimeout(() => nextTrackRef.current?.(), 1500);
+            }
           });
         } else {
           throw new Error('No stream URL resolved');

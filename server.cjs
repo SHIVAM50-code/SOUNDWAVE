@@ -369,17 +369,24 @@ app.get('/api/client-stream', async (req, res) => {
 // ── GET /api/proxy-stream ────────────────────────────────────────────────────
 app.get('/api/proxy-stream', async (req, res) => {
   const videoId = req.query.id;
-  if (!videoId) return res.status(400).end('Missing video ID');
+  const clientUrl = req.query.url;
+  if (!videoId && !clientUrl) return res.status(400).end('Missing video ID or URL');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Accept-Ranges', 'bytes');
-  console.log(`\n[proxy-stream] Proxy request for: ${videoId} (Range: ${req.headers.range})`);
+  console.log(`\n[proxy-stream] Proxy request (Id: ${videoId || 'none'}, Url: ${clientUrl ? clientUrl.substring(0, 60) + '...' : 'none'}) (Range: ${req.headers.range})`);
 
-  // Try to resolve direct stream URL first
-  const resolved = await resolveStreamUrl(videoId);
-  if (resolved && resolved.url) {
-    console.log(`[proxy-stream] Resolved direct stream URL via ${resolved.source}, attempting direct pipe`);
+  let targetUrl = clientUrl;
+  if (!targetUrl && videoId) {
+    const resolved = await resolveStreamUrl(videoId);
+    if (resolved && resolved.url) {
+      targetUrl = resolved.url;
+    }
+  }
+
+  if (targetUrl) {
+    console.log(`[proxy-stream] Proxying stream URL: ${targetUrl.substring(0, 80)}`);
     try {
-      const parsedUrl = new URL(resolved.url);
+      const parsedUrl = new URL(targetUrl);
       const headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Referer': 'https://www.youtube.com/'
@@ -397,12 +404,9 @@ app.get('/api/proxy-stream', async (req, res) => {
         timeout: 25000
       };
 
-      const protocol = resolved.url.startsWith('https') ? https : http;
+      const protocol = targetUrl.startsWith('https') ? https : http;
       const proxyReq = protocol.request(options, (proxyRes) => {
-        // Forward status code (e.g. 200 OK or 206 Partial Content)
         res.status(proxyRes.statusCode);
-
-        // Forward essential headers
         if (proxyRes.headers['content-type']) res.setHeader('Content-Type', proxyRes.headers['content-type']);
         if (proxyRes.headers['content-length']) res.setHeader('Content-Length', proxyRes.headers['content-length']);
         if (proxyRes.headers['content-range']) res.setHeader('Content-Range', proxyRes.headers['content-range']);
@@ -412,25 +416,42 @@ app.get('/api/proxy-stream', async (req, res) => {
       });
 
       proxyReq.on('error', (err) => {
-        console.warn(`[proxy-stream] Direct URL request error: ${err.message}, falling back to yt-dlp spawn`);
-        fallbackSpawn(videoId, req, res);
+        console.warn(`[proxy-stream] Direct URL request error: ${err.message}`);
+        if (videoId) {
+          console.log(`[proxy-stream] Falling back to spawn for videoId: ${videoId}`);
+          fallbackSpawn(videoId, req, res);
+        } else {
+          if (!res.headersSent) res.status(502).end('Proxy error');
+        }
       });
 
       proxyReq.on('timeout', () => {
         proxyReq.destroy();
-        console.warn(`[proxy-stream] Direct URL request timed out, falling back to yt-dlp spawn`);
-        fallbackSpawn(videoId, req, res);
+        console.warn(`[proxy-stream] Direct URL request timed out`);
+        if (videoId) {
+          console.log(`[proxy-stream] Falling back to spawn for videoId: ${videoId}`);
+          fallbackSpawn(videoId, req, res);
+        } else {
+          if (!res.headersSent) res.status(504).end('Proxy timeout');
+        }
       });
 
       proxyReq.end();
       return;
     } catch (e) {
-      console.warn(`[proxy-stream] Direct pipe setup failed: ${e.message}, falling back to yt-dlp spawn`);
+      console.warn(`[proxy-stream] Direct pipe setup failed: ${e.message}`);
+      if (videoId) {
+        fallbackSpawn(videoId, req, res);
+        return;
+      }
     }
   }
 
-  // Fallback if direct pipe failed/could not resolve URL
-  fallbackSpawn(videoId, req, res);
+  if (videoId) {
+    fallbackSpawn(videoId, req, res);
+  } else {
+    if (!res.headersSent) res.status(503).end('No target url found');
+  }
 });
 
 async function fallbackSpawn(videoId, req, res) {

@@ -34,10 +34,29 @@
     <script type="module" src="/src/main.tsx"></script>
     <script>
       if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js')
-            .then(reg => console.log('Service Worker registered successfully:', reg.scope))
-            .catch(err => console.log('Service Worker registration failed:', err));
+        window.addEventListener('load', async () => {
+          try {
+            const reg = await navigator.serviceWorker.register('/sw.js');
+            console.log('SW registered:', reg.scope);
+            reg.update();
+            if (reg.waiting) {
+              reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+              window.location.reload();
+            }
+            reg.addEventListener('updatefound', () => {
+              const newSW = reg.installing;
+              if (newSW) {
+                newSW.addEventListener('statechange', () => {
+                  if (newSW.state === 'activated') {
+                    console.log('New SW activated, reloading...');
+                    window.location.reload();
+                  }
+                });
+              }
+            });
+          } catch (err) {
+            console.log('SW registration failed:', err);
+          }
         });
       }
     </script>

@@ -1,8 +1,5 @@
-// src/services/streamService.ts
-// Gets YouTube audio stream URLs entirely from the BROWSER side (no server IP blocking)
-// Primary: Piped API instances (browser IP = residential = not blocked by YouTube)
-// Fallback: Server /api/stream
-
+﻿// src/services/streamService.ts
+// Resolves stream URLs using Piped client-side APIs, proxied through our backend for CORS-bypassing range support.
 import { API_BASE_URL } from './apiConfig';
 
 export interface StreamResult {
@@ -11,16 +8,14 @@ export interface StreamResult {
   source: string;
 }
 
-// Piped instances with CORS enabled — called directly from the browser
 const PIPED_INSTANCES = [
+  'https://api.piped.private.coffee',
   'https://pipedapi.kavin.rocks',
-  'https://piped-api.garudalinux.org',
-  'https://piped-api.blackgoku.moe',
-  'https://pipedapi.lunar.icu',
-  'https://pipedapi.privacydev.net'
+  'https://pipedapi.privacydev.net',
+  'https://piped-api.lunar.icu'
 ];
 
-async function tryPipedBrowser(videoId: string): Promise<StreamResult | null> {
+async function tryPipedBrowser(videoId: string): Promise<string | null> {
   for (const base of PIPED_INSTANCES) {
     try {
       const controller = new AbortController();
@@ -32,57 +27,60 @@ async function tryPipedBrowser(videoId: string): Promise<StreamResult | null> {
       const data = await resp.json();
       if (data?.error) continue;
 
-      const streams: any[] = data.audioStreams || [];
-      const chosen = streams.find((s) => s.mimeType?.includes('audio/mp4'))
-                  || streams.find((s) => s.mimeType?.includes('audio/webm'))
-                  || streams[0];
+      // Strategy 1: Pure audio streams
+      const audioStreams: any[] = data.audioStreams || [];
+      if (audioStreams.length > 0) {
+        const chosen = audioStreams.find((s: any) => s.mimeType?.includes('audio/mp4'))
+                    || audioStreams.find((s: any) => s.mimeType?.includes('audio/webm'))
+                    || audioStreams[0];
+        if (chosen?.url) {
+          console.log(`[stream] Resolved audio stream client-side from Piped: ${base}`);
+          return chosen.url;
+        }
+      }
 
-      if (chosen?.url) {
-        console.log(`[stream] ✅ Piped browser (${base})`);
-        return { url: chosen.url, type: chosen.mimeType || 'audio/mp4', source: `piped:${base}` };
+      // Strategy 2: Video streams with audio (videoOnly=false)
+      const videoStreams: any[] = data.videoStreams || [];
+      const withAudio = videoStreams.filter((s: any) => !s.videoOnly);
+      if (withAudio.length > 0) {
+        const mp4s = withAudio.filter((s: any) => s.mimeType?.includes('video/mp4'));
+        const chosen = mp4s[mp4s.length - 1] || withAudio[withAudio.length - 1];
+        if (chosen?.url) {
+          console.log(`[stream] Resolved video stream client-side from Piped: ${base}`);
+          return chosen.url;
+        }
       }
     } catch (e: any) {
-      console.log(`[stream] Piped ${base} failed: ${e?.message?.substring?.(0, 60)}`);
+      console.log(`[stream] Piped client-side ${base} failed: ${e?.message?.substring?.(0, 50)}`);
     }
   }
   return null;
 }
 
-async function tryServerStream(videoId: string): Promise<StreamResult | null> {
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 15000);
-    const resp = await fetch(`${API_BASE_URL}/api/stream?id=${videoId}`, { signal: controller.signal });
-    clearTimeout(timer);
-
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    if (data?.url) {
-      console.log(`[stream] ✅ Server stream (${data.source})`);
-      return { url: data.url, type: data.type || 'audio/mp4', source: data.source };
-    }
-  } catch (e: any) {
-    console.log(`[stream] Server /api/stream failed: ${e?.message?.substring?.(0, 80)}`);
-  }
-  return null;
-}
-
-/**
- * Gets a streamable audio URL for a YouTube video ID.
- * Tries browser-side Piped API first (no server IP blocking),
- * then falls back to server-side extraction.
- */
 export async function getStreamUrl(videoId: string): Promise<StreamResult | null> {
-  console.log(`[stream] Fetching stream URL for: ${videoId}`);
+  console.log(`[stream] Resolving stream URL for: ${videoId}`);
 
-  // 1. Try Piped directly from browser (residential IP, no blocking)
-  const piped = await tryPipedBrowser(videoId);
-  if (piped) return piped;
+  // 1. Try to resolve client-side using Piped (residential/mobile IP)
+  try {
+    const directUrl = await tryPipedBrowser(videoId);
+    if (directUrl) {
+      const proxiedUrl = `${API_BASE_URL}/api/proxy-stream?url=${encodeURIComponent(directUrl)}`;
+      console.log('[stream] ✅ Using client-resolved stream routed through backend proxy');
+      return {
+        url: proxiedUrl,
+        type: 'audio/mp4',
+        source: 'client-resolved-proxied'
+      };
+    }
+  } catch (e) {
+    console.warn('[stream] Client-side resolution error:', e);
+  }
 
-  // 2. Fallback to server (yt-dlp / ytdl-core / invidious)
-  const server = await tryServerStream(videoId);
-  if (server) return server;
-
-  console.error(`[stream] ❌ All sources failed for ${videoId}`);
-  return null;
+  // 2. Fallback to server-side resolution
+  console.log('[stream] Fallback: Using backend server-side proxy stream');
+  return {
+    url: `${API_BASE_URL}/api/proxy-stream?id=${videoId}`,
+    type: 'audio/mp4',
+    source: 'server-resolved-proxied'
+  };
 }
