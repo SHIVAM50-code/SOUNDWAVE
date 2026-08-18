@@ -1,4 +1,4 @@
-﻿// src/services/streamService.ts
+// src/services/streamService.ts
 // Resolves stream URLs client-side using public Cobalt API instances (with CORS-enabled direct audio tunnels)
 // Primary: Cobalt (api.kittycat.boo) -> plays direct mp3 audio
 // Secondary: Piped browser-direct
@@ -106,12 +106,11 @@ export async function getStreamUrl(videoId: string): Promise<StreamResult | null
   try {
     const cobaltUrl = await tryCobaltBrowser(videoId);
     if (cobaltUrl) {
-      const proxiedUrl = `${API_BASE_URL}/api/proxy-stream?url=${encodeURIComponent(cobaltUrl)}`;
-      console.log('[stream] ✅ Using Cobalt client-resolved audio stream routed through backend proxy');
+      console.log('[stream] ✅ Using Cobalt client-resolved audio stream directly');
       return {
-        url: proxiedUrl,
+        url: cobaltUrl,
         type: 'audio/mp3',
-        source: 'cobalt-client-resolved-proxied'
+        source: 'cobalt-client-resolved-direct'
       };
     }
   } catch (e) {
@@ -122,12 +121,11 @@ export async function getStreamUrl(videoId: string): Promise<StreamResult | null
   try {
     const pipedUrl = await tryPipedBrowser(videoId);
     if (pipedUrl) {
-      const proxiedUrl = `${API_BASE_URL}/api/proxy-stream?url=${encodeURIComponent(pipedUrl)}`;
-      console.log('[stream] ✅ Using Piped client-resolved stream routed through backend proxy');
+      console.log('[stream] ✅ Using Piped client-resolved stream directly');
       return {
-        url: proxiedUrl,
+        url: pipedUrl,
         type: 'audio/mp4',
-        source: 'piped-client-resolved-proxied'
+        source: 'piped-client-resolved-direct'
       };
     }
   } catch (e) {
