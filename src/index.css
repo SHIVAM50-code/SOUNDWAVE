@@ -2978,3 +2978,204 @@ body {
 
 
 
+
+/* Playlist Detail View */
+.playlist-detail-header {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.playlist-detail-header .back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  width: fit-content;
+  font-size: 0.85rem;
+  transition: all 0.2s ease;
+}
+.playlist-detail-header .back-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+.playlist-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  backdrop-filter: blur(10px);
+}
+.playlist-large-art {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: rgba(255, 255, 255, 0.05);
+  flex-shrink: 0;
+}
+.playlist-large-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.playlist-banner-info {
+  flex: 1;
+  min-width: 0;
+}
+.playlist-banner-info h2 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #fff;
+  margin: 0 0 2px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.playlist-detail-meta {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin: 0 0 8px 0;
+}
+.play-all-playlist-btn {
+  background: var(--primary, #8b5cf6);
+  color: #fff;
+  border: none;
+  border-radius: 16px;
+  padding: 6px 14px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+}
+.play-all-playlist-btn:hover {
+  opacity: 0.9;
+}
+.playlist-songs-list {
+  display: flex;
+  flex-direction: column;
+}
+.playlist-songs-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.playlist-song-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.playlist-song-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.playlist-song-row.active {
+  background: rgba(139, 92, 246, 0.15);
+  border-color: rgba(139, 92, 246, 0.3);
+}
+.song-row-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.song-reorder-arrows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.arrow-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 0.7rem;
+  line-height: 1;
+  border-radius: 4px;
+}
+.arrow-btn:hover:not(:disabled) {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+.arrow-btn:disabled {
+  opacity: 0.2;
+  cursor: default;
+}
+.drag-handle-icon {
+  display: flex;
+  align-items: center;
+  cursor: grab;
+}
+.song-row-thumb {
+  width: 42px;
+  height: 42px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+  display: block;
+}
+.song-row-info {
+  flex: 1;
+  min-width: 0;
+}
+.song-row-title {
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: #fff;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.song-row-title.playing-title {
+  color: var(--primary, #8b5cf6);
+  font-weight: 600;
+}
+.song-row-artist {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin: 2px 0 0 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.song-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.remove-song-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+.remove-song-btn:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
