@@ -1,8 +1,7 @@
 // src/services/streamService.ts
-// Resolves stream URLs client-side using public Cobalt API instances (with CORS-enabled direct audio tunnels)
-// Primary: Cobalt (api.kittycat.boo) -> plays direct mp3 audio
-// Secondary: Piped browser-direct
-// Fallback: Server-side proxy
+// Resolves stream URLs client-side using Cobalt API (with CORS-enabled direct audio tunnels)
+// Primary: Cobalt (cobaltapi.kittycat.boo) -> fetched as blob with correct MIME type
+// Fallback: Server-side proxy via backend
 
 import { API_BASE_URL } from './apiConfig';
 
@@ -16,20 +15,27 @@ const COBALT_INSTANCES = [
   'https://cobaltapi.kittycat.boo/'
 ];
 
-const PIPED_INSTANCES = [
-  'https://api.piped.private.coffee',
-  'https://pipedapi.kavin.rocks',
-  'https://pipedapi.privacydev.net'
-];
+// Revokable blob URLs - clean up previous ones to prevent memory leaks
+let _lastBlobUrl: string | null = null;
+function revokePreviousBlob() {
+  if (_lastBlobUrl) {
+    URL.revokeObjectURL(_lastBlobUrl);
+    _lastBlobUrl = null;
+  }
+}
 
-async function tryCobaltBrowser(videoId: string): Promise<string | null> {
+/**
+ * Resolve a Cobalt tunnel URL for the given YouTube video.
+ * Returns the raw tunnel URL (not yet fetched as audio data).
+ */
+async function resolveCobaltTunnelUrl(videoId: string): Promise<string | null> {
   const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
-  
+
   for (const base of COBALT_INSTANCES) {
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 6000);
-      
+      const timer = setTimeout(() => controller.abort(), 8000);
+
       const resp = await fetch(base, {
         method: 'POST',
         headers: {
@@ -43,13 +49,13 @@ async function tryCobaltBrowser(videoId: string): Promise<string | null> {
         }),
         signal: controller.signal
       });
-      
+
       clearTimeout(timer);
       if (!resp.ok) continue;
-      
+
       const json = await resp.json();
       if (json.status === 'tunnel' && json.url) {
-        console.log(`[stream] Resolved audio stream client-side via Cobalt: ${base}`);
+        console.log(`[stream] Cobalt resolved tunnel URL via: ${base}`);
         return json.url;
       }
     } catch (e: any) {
@@ -59,80 +65,70 @@ async function tryCobaltBrowser(videoId: string): Promise<string | null> {
   return null;
 }
 
-async function tryPipedBrowser(videoId: string): Promise<string | null> {
-  for (const base of PIPED_INSTANCES) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 6000);
-      const resp = await fetch(`${base}/streams/${videoId}`, { signal: controller.signal });
-      clearTimeout(timer);
+/**
+ * Fetch audio data from a Cobalt tunnel URL and return a blob URL
+ * with the correct MIME type. This is necessary because Cobalt's tunnel
+ * responses lack Content-Type headers and send Content-Length: 0,
+ * which causes HTML5 <audio> elements to abort playback.
+ */
+async function fetchCobaltAsBlob(tunnelUrl: string): Promise<string | null> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30000); // 30s for full download
 
-      if (!resp.ok) continue;
-      const data = await resp.json();
-      if (data?.error) continue;
+    const resp = await fetch(tunnelUrl, {
+      signal: controller.signal
+    });
+    clearTimeout(timer);
 
-      const audioStreams: any[] = data.audioStreams || [];
-      if (audioStreams.length > 0) {
-        const chosen = audioStreams.find((s: any) => s.mimeType?.includes('audio/mp4'))
-                    || audioStreams.find((s: any) => s.mimeType?.includes('audio/webm'))
-                    || audioStreams[0];
-        if (chosen?.url) {
-          console.log(`[stream] Resolved audio stream client-side from Piped: ${base}`);
-          return chosen.url;
-        }
-      }
-
-      const videoStreams: any[] = data.videoStreams || [];
-      const withAudio = videoStreams.filter((s: any) => !s.videoOnly);
-      if (withAudio.length > 0) {
-        const mp4s = withAudio.filter((s: any) => s.mimeType?.includes('video/mp4'));
-        const chosen = mp4s[mp4s.length - 1] || withAudio[withAudio.length - 1];
-        if (chosen?.url) {
-          console.log(`[stream] Resolved video stream client-side from Piped: ${base}`);
-          return chosen.url;
-        }
-      }
-    } catch (e: any) {
-      console.log(`[stream] Piped client-side ${base} failed: ${e?.message?.substring?.(0, 50)}`);
+    if (!resp.ok) {
+      console.warn(`[stream] Cobalt tunnel fetch failed: ${resp.status}`);
+      return null;
     }
+
+    const arrayBuffer = await resp.arrayBuffer();
+    if (arrayBuffer.byteLength < 1000) {
+      console.warn(`[stream] Cobalt tunnel returned too little data: ${arrayBuffer.byteLength} bytes`);
+      return null;
+    }
+
+    // Revoke previous blob to free memory
+    revokePreviousBlob();
+
+    const blob = new Blob([arrayBuffer], { type: 'audio/mpeg' });
+    const blobUrl = URL.createObjectURL(blob);
+    _lastBlobUrl = blobUrl;
+
+    console.log(`[stream] ✅ Cobalt audio blob created: ${(arrayBuffer.byteLength / 1024 / 1024).toFixed(1)} MB`);
+    return blobUrl;
+  } catch (e: any) {
+    console.warn(`[stream] Cobalt blob fetch error: ${e?.message?.substring?.(0, 60)}`);
+    return null;
   }
-  return null;
 }
 
 export async function getStreamUrl(videoId: string): Promise<StreamResult | null> {
   console.log(`[stream] Resolving stream URL for: ${videoId}`);
 
-  // 1. Try Cobalt (kittycat.boo) first - extremely fast, routed through our backend proxy to enforce correct headers
+  // 1. Try Cobalt — resolve tunnel URL, then fetch as blob with correct MIME type
   try {
-    const cobaltUrl = await tryCobaltBrowser(videoId);
-    if (cobaltUrl) {
-      console.log('[stream] ✅ Using Cobalt client-resolved audio stream directly');
-      return {
-        url: cobaltUrl,
-        type: 'audio/mp3',
-        source: 'cobalt-client-resolved-direct'
-      };
+    const tunnelUrl = await resolveCobaltTunnelUrl(videoId);
+    if (tunnelUrl) {
+      console.log('[stream] Fetching Cobalt audio as blob...');
+      const blobUrl = await fetchCobaltAsBlob(tunnelUrl);
+      if (blobUrl) {
+        return {
+          url: blobUrl,
+          type: 'audio/mpeg',
+          source: 'cobalt-client-blob'
+        };
+      }
     }
   } catch (e) {
     console.warn('[stream] Cobalt resolution error:', e);
   }
 
-  // 2. Try Piped second
-  try {
-    const pipedUrl = await tryPipedBrowser(videoId);
-    if (pipedUrl) {
-      console.log('[stream] ✅ Using Piped client-resolved stream directly');
-      return {
-        url: pipedUrl,
-        type: 'audio/mp4',
-        source: 'piped-client-resolved-direct'
-      };
-    }
-  } catch (e) {
-    console.warn('[stream] Piped resolution error:', e);
-  }
-
-  // 3. Fallback to server-side resolution
+  // 2. Fallback to server-side resolution (yt-dlp / youtubei on backend)
   console.log('[stream] Fallback: Using backend server-side proxy stream');
   return {
     url: `${API_BASE_URL}/api/proxy-stream?id=${videoId}`,
